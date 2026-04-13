@@ -367,6 +367,169 @@ export async function freeChat(
   return fullContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
 
+// ─── Ideation (Deep Talk) mode ──────────────────────────────────────────────
+// A dedicated brainstorming mode that pushes the user to expand their idea,
+// ask probing questions, and surface creative angles. The system prompt
+// explicitly tells the model to act like a product-discovery partner.
+
+const IDEATION_SYSTEM_PROMPT = `You are a product-discovery partner helping the user explore and shape a new project idea through deep conversation.
+
+Your goals:
+- Dig deeper into WHY the user wants this, WHO it is for, and WHAT would make it successful.
+- Ask ONE thoughtful follow-up question at a time — never a wall of questions.
+- Suggest creative angles, analogous products, and edge cases the user may not have considered.
+- When the user proposes something vague, reflect it back concretely and offer 2-3 alternatives.
+- Keep responses concise (3-6 sentences) so the conversation flows naturally.
+- Respond in clear natural language — never JSON, never code fences, never <think> tags.
+- Mirror the user's language (Thai or English).`;
+
+export async function ideationChat(
+  message: string,
+  history: { role: 'user' | 'assistant'; content: string }[] = [],
+  onChunk?: (partial: string) => void
+): Promise<string> {
+  const body = JSON.stringify({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: IDEATION_SYSTEM_PROMPT },
+      ...history,
+      { role: 'user', content: message },
+    ],
+    stream: true,
+  });
+
+  const response = await fetch(API_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(API_KEY ? { 'Authorization': `Bearer ${API_KEY}` } : {}),
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AI API error (${response.status}): ${errorText}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response body');
+
+  const decoder = new TextDecoder();
+  let fullContent = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        const token = parsed.message?.content ?? '';
+        if (token) {
+          fullContent += token;
+          onChunk?.(fullContent);
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+  }
+
+  return fullContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+}
+
+export interface IdeasSummary {
+  title: string;
+  markdown: string;
+}
+
+// Take the full ideation transcript and compress it into (1) a short card
+// title and (2) the body of an `ideas.md` file capturing the distilled ideas.
+export async function summarizeIdeasForTask(
+  history: { role: 'user' | 'assistant'; content: string }[]
+): Promise<IdeasSummary> {
+  if (history.length === 0) {
+    return { title: 'Ideas from brainstorm', markdown: '# Ideas\n\n(No conversation yet.)\n' };
+  }
+
+  const transcript = history
+    .map((m) => `**${m.role === 'user' ? 'User' : 'AI'}:** ${m.content}`)
+    .join('\n\n');
+
+  const prompt = `Below is a brainstorming conversation. Distill it into an \`ideas.md\` file that captures the concrete ideas, decisions, and open questions.
+
+Respond ONLY with this exact JSON format, nothing else:
+{"title": "short card title (max 60 chars)", "markdown": "full ideas.md content as a markdown string"}
+
+The markdown body should include:
+- A top-level \`# <project/idea name>\` heading
+- A \`## Summary\` paragraph
+- A \`## Key ideas\` bulleted list (3-8 bullets) with the concrete ideas discussed
+- A \`## Open questions\` bulleted list of things still to decide
+- A \`## Next steps\` bulleted list with 2-4 actionable next moves
+Mirror the conversation's language (Thai or English). No code fences, no <think> tags.
+
+CONVERSATION:
+${transcript}`;
+
+  const body = JSON.stringify({
+    model: MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a project planning assistant. Respond ONLY with valid JSON matching the requested shape. No markdown wrappers, no prose outside the JSON.',
+      },
+      { role: 'user', content: prompt },
+    ],
+    stream: false,
+  });
+
+  const response = await fetch(API_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(API_KEY ? { 'Authorization': `Bearer ${API_KEY}` } : {}),
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AI API error (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as { message?: { content?: string } };
+  const raw = (data.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
+  // Robust JSON extraction — cope with fenced code blocks and stray prose.
+  const tryParse = (s: string): IdeasSummary | null => {
+    try {
+      const obj = JSON.parse(s);
+      if (obj && typeof obj.title === 'string' && typeof obj.markdown === 'string') {
+        return { title: obj.title, markdown: obj.markdown };
+      }
+    } catch { /* fall through */ }
+    return null;
+  };
+
+  const direct = tryParse(raw);
+  if (direct) return direct;
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced && tryParse(fenced[1].trim())) return tryParse(fenced[1].trim())!;
+  const objectMatch = raw.match(/\{[\s\S]*\}/);
+  if (objectMatch && tryParse(objectMatch[0])) return tryParse(objectMatch[0])!;
+
+  // Fallback: no structured summary available — dump the transcript.
+  return {
+    title: 'Ideas from brainstorm',
+    markdown: `# Ideas from brainstorm\n\n## Raw transcript\n\n${transcript}\n`,
+  };
+}
+
 export async function generateDescriptionAndChecklist(
   title: string,
   onChunk?: (partial: string) => void

@@ -28,7 +28,8 @@ export interface RunnerTask {
   workingDir: string;
   callbackUrl?: string;
   model?: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+  mode?: 'one-time' | 'loop';
+  status: 'queued' | 'running' | 'loop' | 'completed' | 'failed' | 'stopped';
   output: string;
   createdAt: string;
   startedAt: string | null;
@@ -49,7 +50,7 @@ export interface RunnerTaskStatus {
 export interface RunnerTaskSummary {
   id: string;
   prompt: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+  status: 'queued' | 'running' | 'loop' | 'completed' | 'failed' | 'stopped';
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -70,13 +71,15 @@ export async function createRunnerTask(
   workingDir?: string,
   callbackUrl?: string,
   model?: string,
-  boardId?: string
+  boardId?: string,
+  mode?: 'one-time' | 'loop'
 ): Promise<RunnerTask> {
   const body: Record<string, string> = { prompt };
   if (workingDir) body.workingDir = workingDir;
   if (callbackUrl) body.callbackUrl = callbackUrl;
   if (model) body.model = model;
   if (boardId) body.boardId = boardId;
+  if (mode) body.mode = mode;
 
   const res = await fetch(`${RUNNER_BASE}/api/tasks`, {
     method: 'POST',

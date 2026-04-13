@@ -48,6 +48,9 @@ const DEFAULT_MODELS = [
   { id: 'opus', name: 'Opus (alias)', group: 'Claude' },
   { id: 'sonnet', name: 'Sonnet (alias)', group: 'Claude' },
   { id: 'haiku', name: 'Haiku (alias)', group: 'Claude' },
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (preview)', group: 'Gemini' },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (preview)', group: 'Gemini' },
+  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (preview)', group: 'Gemini' },
   { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', group: 'Gemini' },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', group: 'Gemini' },
   { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', group: 'Gemini' },
@@ -198,13 +201,14 @@ app.use('/api', authMiddleware);
 const tasks = new Map();
 
 class Task {
-  constructor({ prompt, workingDir, callbackUrl, model, boardId }) {
+  constructor({ prompt, workingDir, callbackUrl, model, boardId, mode }) {
     this.id = uuidv4();
     this.prompt = prompt;
     this.workingDir = workingDir || process.cwd();
     this.callbackUrl = callbackUrl || null;
     this.model = model || null;
     this.boardId = boardId || null;
+    this.mode = mode === 'loop' ? 'loop' : 'one-time';
     this.status = 'queued';
     this.output = '';
     this.createdAt = new Date().toISOString();
@@ -224,6 +228,7 @@ class Task {
       callbackUrl: this.callbackUrl,
       model: this.model,
       boardId: this.boardId,
+      mode: this.mode,
       status: this.status,
       output: this.output,
       createdAt: this.createdAt,
@@ -235,6 +240,8 @@ class Task {
   }
 
   toStatus() {
+    // 'loop' tasks are intentionally kept alive after going idle, so they are
+    // NOT considered done — only the terminal states are.
     const done = ['completed', 'failed', 'stopped'].includes(this.status);
     return {
       id: this.id,
@@ -659,12 +666,77 @@ function runTask(task) {
   task.ptyProcess = ptyProcess;
 
   // Track state for auto-handling prompts
+  // NOTE: `promptScheduled` flips the moment we decide to send the task prompt;
+  // `promptSent` only flips after the Enter has actually been written. The
+  // completion detector keys off `promptSent` so it can never mis-fire on the
+  // idle ❯ that's visible during Claude's first-run transition.
+  let promptScheduled = false;
   let promptSent = false;
   let trustHandled = false;
   let themeHandled = false;
   let loginHandled = false;
   let claudeReady = false;
   let outputBuffer = '';
+  let pollStarted = false;
+  let pollAttempts = 0;
+  const POLL_INTERVAL_MS = 500;
+  const POLL_MAX_ATTEMPTS = 24; // ~12 seconds of polling before forcing send
+
+  // Main UI signature — any of these strongly indicates we're past the
+  // trust/theme/login gates and looking at the real Claude Code ready screen.
+  // Verified empirically against claude-code v2.1.104 in a fresh folder.
+  const MAIN_UI_SIGNATURE = /Tips\s*for\s*getting\s*started|bypass\s*permissions\s*on|Welcome\s*back|How\s*can\s*I\s*help|What\s*can\s*I\s*help|Type\s*your\s*message|╭─+\s*Claude\s*Code/i;
+
+  // Unified helper: decide we're sending the task prompt, then (after
+  // optional pre-delay for Claude to finish painting) actually type it + \r.
+  // Idempotent — the first caller wins, later calls are no-ops.
+  function schedulePromptWrite(source, preDelayMs = 0) {
+    if (promptScheduled || exitSent) return;
+    promptScheduled = true;
+    outputBuffer = '';
+    console.log(`[Task ${task.id}] ${source}: scheduling prompt write (preDelay=${preDelayMs}ms)`);
+    setTimeout(() => {
+      if (exitSent) return;
+      try {
+        ptyProcess.write(task.prompt);
+      } catch { return; }
+      setTimeout(() => {
+        if (exitSent) return;
+        try { ptyProcess.write('\r'); } catch { return; }
+        promptSent = true;
+        postPromptBuffer = '';
+        console.log(`[Task ${task.id}] ${source}: auto-typed task prompt`);
+      }, 300);
+    }, preDelayMs);
+  }
+
+  // Active poll — scans outputBuffer every POLL_INTERVAL_MS for main UI
+  // signature. This is the reliable path because it doesn't depend on new
+  // onData arriving: Claude often paints the ready banner and then goes idle,
+  // so a reactive regex would miss it entirely.
+  function pollMainUi() {
+    if (promptScheduled || exitSent) return;
+    const clean = stripAnsi(outputBuffer);
+    if (MAIN_UI_SIGNATURE.test(clean)) {
+      console.log(`[Task ${task.id}] Main UI detected after ${pollAttempts} poll(s) — sending prompt`);
+      schedulePromptWrite('Main UI poll', 400);
+      return;
+    }
+    pollAttempts++;
+    if (pollAttempts >= POLL_MAX_ATTEMPTS) {
+      console.log(`[Task ${task.id}] Main UI not detected after ${pollAttempts} polls — firing fallback`);
+      schedulePromptWrite('Main UI poll timeout', 0);
+      return;
+    }
+    setTimeout(pollMainUi, POLL_INTERVAL_MS);
+  }
+
+  function startPollMainUi() {
+    if (pollStarted) return;
+    pollStarted = true;
+    pollAttempts = 0;
+    setTimeout(pollMainUi, POLL_INTERVAL_MS);
+  }
 
   // Completion detection state
   let postPromptBuffer = '';
@@ -719,6 +791,17 @@ function runTask(task) {
 
   function triggerExit() {
     if (exitSent) return;
+    // Loop-mode tasks never exit automatically — they stay in the 'loop'
+    // state after going idle so the user can keep sending follow-ups over
+    // the WebSocket. Only an explicit stop or the PTY dying terminates them.
+    if (task.mode === 'loop') {
+      if (task.status !== 'loop') {
+        task.status = 'loop';
+        console.log(`[Task ${task.id}] Idle detected in loop mode — keeping PTY alive, status=loop`);
+        notifyStatusChange(task);
+      }
+      return;
+    }
     exitSent = true;
     if (task.provider === 'gemini') {
       // Gemini CLI: `/quit` is the only clean way out — do NOT follow up with a
@@ -771,9 +854,10 @@ function runTask(task) {
       themeHandled = true;
       outputBuffer = '';
       setTimeout(() => {
-        ptyProcess.write('\r');
+        try { ptyProcess.write('\r'); } catch {}
         console.log(`[Task ${task.id}] Auto-accepted theme picker (default)`);
       }, 800);
+      startPollMainUi();
       return;
     }
 
@@ -782,39 +866,31 @@ function runTask(task) {
       loginHandled = true;
       outputBuffer = '';
       setTimeout(() => {
-        ptyProcess.write('\r');
+        try { ptyProcess.write('\r'); } catch {}
         console.log(`[Task ${task.id}] Auto-accepted login screen (default)`);
       }, 800);
+      startPollMainUi();
       return;
     }
 
-    // Auto-handle "Trust this folder" prompt — always active
-    if (!trustHandled && /trust this folder|trust the files|Do you trust/i.test(cleanBuffer)) {
+    // Auto-handle "Trust this folder" prompt — Claude Code v2.1+ paints the
+    // dialog with a `❯ 1. Yes, I trust this folder` SelectInput. Enter
+    // selects the highlighted Yes, which is correct.
+    if (!trustHandled && /trust this folder|trust the files|Do you trust|Yes,\s*I\s*trust/i.test(cleanBuffer)) {
       trustHandled = true;
       outputBuffer = '';
       setTimeout(() => {
-        ptyProcess.write('\r');
+        try { ptyProcess.write('\r'); } catch {}
         console.log(`[Task ${task.id}] Auto-accepted "Trust folder" prompt`);
       }, 800);
+      startPollMainUi();
       return;
     }
 
-    // Wait for claudeReady before detecting other prompts
+    // Wait for claudeReady before starting the main UI poll (if no first-run
+    // handler fired to start it already).
     if (!claudeReady) return;
-
-    // Auto-send the task prompt once the CLI is ready (Claude or Gemini)
-    if (!promptSent && /Tips|bypass permissions|What can I help|How can I help|Type your message|YOLO mode/i.test(cleanBuffer)) {
-      promptSent = true;
-      outputBuffer = '';
-      setTimeout(() => {
-        ptyProcess.write(task.prompt);
-        setTimeout(() => {
-          ptyProcess.write('\r');
-          console.log(`[Task ${task.id}] Auto-typed and sent task prompt`);
-        }, 300);
-      }, 1000);
-      return;
-    }
+    startPollMainUi();
 
     // ── Completion detection ─────────────────────────────────────
     // After prompt is sent, watch for Claude to finish and return to idle ❯ prompt
@@ -882,23 +958,22 @@ function runTask(task) {
     ptyProcess.write(claudeCmd);
     console.log(`[Task ${task.id}] Sent ${task.provider} command${safeModel ? ` (model=${safeModel})` : ''}`);
 
-    // Start watching for Claude prompts after a delay
+    // Mark claudeReady after a delay. DO NOT wipe outputBuffer here — if
+    // Claude already painted the main UI (e.g. folder is already trusted),
+    // the "Tips for getting started" text is already in the buffer and the
+    // poll below relies on it to fire immediately. Wiping would strand the
+    // task until the 15s fallback.
     setTimeout(() => {
       claudeReady = true;
-      outputBuffer = '';
-      console.log(`[Task ${task.id}] Now watching for Claude ready prompt...`);
+      console.log(`[Task ${task.id}] Claude marked ready — starting main UI poll`);
+      startPollMainUi();
     }, 3000);
 
-    // Fallback: if prompt detection doesn't trigger, send after timeout
+    // Last-resort fallback: if no other path has sent the prompt by now,
+    // force it. Reachable only on very slow machines where even the post-
+    // first-run proactive timers couldn't finish.
     setTimeout(() => {
-      if (!promptSent) {
-        promptSent = true;
-        ptyProcess.write(task.prompt);
-        setTimeout(() => {
-          ptyProcess.write('\r');
-          console.log(`[Task ${task.id}] Fallback: auto-typed task prompt after timeout`);
-        }, 300);
-      }
+      schedulePromptWrite('15s fallback', 0);
     }, 15000);
 
   }, 1000);
@@ -933,7 +1008,7 @@ app.delete('/api/models/:id', (req, res) => {
 // ─── REST API ──────────────────────────────────────────────────
 app.post('/api/tasks', (req, res) => {
   try {
-    const { prompt, workingDir, callbackUrl, model, boardId } = req.body;
+    const { prompt, workingDir, callbackUrl, model, boardId, mode } = req.body;
     if (!prompt || !prompt.trim()) {
       return res.status(400).json({ error: 'prompt is required' });
     }
@@ -944,6 +1019,7 @@ app.post('/api/tasks', (req, res) => {
       callbackUrl,
       model: model || null,
       boardId: typeof boardId === 'string' && boardId.trim() ? boardId.trim() : null,
+      mode: mode === 'loop' ? 'loop' : 'one-time',
     });
     tasks.set(task.id, task);
     runTask(task);

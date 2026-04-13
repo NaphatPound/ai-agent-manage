@@ -17,6 +17,18 @@ export interface Board {
   isStarred: boolean;
   createdAt: string;
   updatedAt: string;
+  shortcuts?: Shortcut[];
+}
+
+export interface Shortcut {
+  id: string;
+  name: string;
+  icon?: string;
+  prompt: string;
+  model?: string;
+  workingDir?: string;
+  color?: string;
+  mode?: 'one-time' | 'loop';
 }
 
 export interface BoardBackground {
@@ -52,7 +64,7 @@ export interface Card {
   createdAt: string;
   updatedAt: string;
   claudeTaskId?: string;
-  claudeTaskStatus?: 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+  claudeTaskStatus?: 'queued' | 'running' | 'loop' | 'completed' | 'failed' | 'stopped';
   priority?: 'critical' | 'high' | 'medium' | 'low';
   taskGroup?: string;
   taskOrder?: number;

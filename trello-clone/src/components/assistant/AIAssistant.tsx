@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Bot, Loader2, CheckCircle2, AlertCircle, Terminal, ImagePlus, Cpu, ChevronDown, CalendarClock, ListTodo, MessageCircle, Clock, Mic, MicOff, Volume2, VolumeX, LayoutList, FileText } from 'lucide-react';
+import { X, Send, Bot, Loader2, CheckCircle2, AlertCircle, Terminal, ImagePlus, Cpu, ChevronDown, CalendarClock, ListTodo, MessageCircle, Clock, Mic, MicOff, Volume2, VolumeX, LayoutList, FileText, Lightbulb, FilePlus2, Zap } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { Board } from '../../types';
 import { useBoardStore } from '../../stores/boardStore';
-import { analyzeRequirements, generateCardFromDescription, chatWithImage, freeChat, voiceChat } from '../../services/ai';
+import { analyzeRequirements, generateCardFromDescription, chatWithImage, freeChat, voiceChat, ideationChat, summarizeIdeasForTask } from '../../services/ai';
 import { createRunnerTask, listModels, type RunnerModel } from '../../services/claudeRunner';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { getEffectiveShortcuts, EffectiveShortcut } from '../../lib/shortcuts';
 import './ai-assistant.css';
 
-type ChatMode = 'schedule' | 'plan' | 'chat' | 'voice';
+type ChatMode = 'schedule' | 'plan' | 'chat' | 'ideas' | 'shortcut' | 'voice';
 
 interface Message {
   id: string;
@@ -44,6 +45,18 @@ const MODE_CONFIG: Record<ChatMode, { icon: React.ReactNode; label: string; plac
     placeholder: 'Ask anything… brainstorm ideas, discuss approaches.',
     color: '#61BD4F',
   },
+  ideas: {
+    icon: <Lightbulb size={13} />,
+    label: 'Ideas',
+    placeholder: 'Describe a vague idea… the AI will deep-dive with you until you can ship it.',
+    color: '#F2D600',
+  },
+  shortcut: {
+    icon: <Zap size={13} />,
+    label: 'Shortcut',
+    placeholder: 'Click a shortcut below to fire it into Claude Code Runner.',
+    color: '#C377E0',
+  },
   voice: {
     icon: <Mic size={13} />,
     label: 'Voice',
@@ -59,7 +72,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
     {
       id: 'welcome',
       role: 'assistant',
-      content: `Hi! I'm your AI assistant for the "${board.title}" board.\n\nChoose a mode:\n• Schedule — create tasks with a scheduled execution time\n• Plan — break down requirements into To Do cards\n• Chat — brainstorm ideas freely`,
+      content: `Hi! I'm your AI assistant for the "${board.title}" board.\n\nChoose a mode:\n• Schedule — create tasks with a scheduled execution time\n• Plan — break down requirements into To Do cards\n• Chat — free-form Q&A\n• Ideas — deep-talk brainstorming; click "Create task from these ideas" when done to spawn an ideas.md card`,
     },
   ]);
   const [input, setInput] = useState('');
@@ -75,6 +88,8 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
   };
   const [scheduleTime, setScheduleTime] = useState(getDefaultScheduleTime);
   const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [ideasHistory, setIdeasHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [isCreatingIdeaCard, setIsCreatingIdeaCard] = useState(false);
   const [voiceHistory, setVoiceHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -88,6 +103,9 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
   const createCard = useBoardStore(s => s.createCard);
   const updateCard = useBoardStore(s => s.updateCard);
   const addChecklist = useBoardStore(s => s.addChecklist);
+  const globalShortcuts = useSettingsStore(s => s.globalShortcuts);
+  const effectiveShortcuts: EffectiveShortcut[] = getEffectiveShortcuts(board, globalShortcuts);
+  const [runningShortcutId, setRunningShortcutId] = useState<string | null>(null);
   const addChecklistItem = useBoardStore(s => s.addChecklistItem);
   const createLabel = useBoardStore(s => s.createLabel);
 
@@ -503,6 +521,150 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
     }
   };
 
+  // ─── Mode: Shortcut (one-click runner commands) ───
+  // Fires the shortcut's prompt straight at Claude Code Runner while still
+  // creating a tracking card in the To Do list, mirroring the existing
+  // Run-with-Claude flow so task polling + auto-promote behave normally.
+  const handleRunShortcut = async (shortcut: EffectiveShortcut) => {
+    if (runningShortcutId) return;
+    setRunningShortcutId(shortcut.id);
+
+    const loadingId = uuidv4();
+    setMessages(prev => [...prev, {
+      id: loadingId,
+      role: 'assistant',
+      content: `Firing shortcut “${shortcut.name}”…`,
+      isLoading: true,
+    }]);
+
+    try {
+      const boardLists = board.listIds.map(id => lists[id]).filter(Boolean);
+      // Shortcuts fire straight into Claude Code, so the tracking card should
+      // land in In Progress (it's already running), not To Do. Fall back to
+      // To Do / first list if no In Progress list exists.
+      const inProgressList =
+        boardLists.find(l => /in\s*progress|inprogress|in-progress/i.test(l.title)) ||
+        boardLists.find(l => /to\s*do|todo|backlog/i.test(l.title)) ||
+        boardLists[0];
+      if (!inProgressList) throw new Error('No lists on this board — create one first.');
+
+      const runnerModel = shortcut.model || localModel || undefined;
+      const runnerDir = shortcut.workingDir || WORKING_DIR || undefined;
+      const runnerMode = shortcut.mode || 'one-time';
+
+      const task = await createRunnerTask(shortcut.prompt, runnerDir, undefined, runnerModel, board.id, runnerMode);
+
+      // Tracking card in the existing task channel
+      const cardTitle = `${shortcut.icon ? shortcut.icon + ' ' : ''}${shortcut.name}`.trim() || 'Shortcut';
+      const card = createCard(inProgressList.id, board.id, cardTitle);
+      updateCard(card.id, {
+        description: shortcut.prompt,
+        claudeTaskId: task.id,
+        claudeTaskStatus: task.status,
+      });
+
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(),
+        role: 'assistant',
+        content: `Shortcut sent to Claude Code Runner.\nTask ID: ${task.id.slice(0, 8)}…\nStatus: ${task.status}`,
+        createdCards: [cardTitle],
+      }));
+    } catch (e) {
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(),
+        role: 'assistant',
+        content: `Shortcut failed: ${String(e)}`,
+        isError: true,
+      }));
+    } finally {
+      setRunningShortcutId(null);
+    }
+  };
+
+  // ─── Mode: Ideas (Deep-talk brainstorming) ───
+  const handleIdeas = async () => {
+    if (!input.trim() || isLoading) return;
+    const text = input.trim();
+
+    const userMessage: Message = { id: uuidv4(), role: 'user', content: text };
+    const loadingId = uuidv4();
+    setMessages(prev => [...prev, userMessage, { id: loadingId, role: 'assistant', content: '', isLoading: true }]);
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      const onChunk = (partial: string) => {
+        setMessages(prev => prev.map(m =>
+          m.id === loadingId ? { ...m, content: partial, isLoading: true } : m
+        ));
+      };
+
+      const result = await ideationChat(text, ideasHistory, onChunk);
+
+      setIdeasHistory(prev => [...prev, { role: 'user', content: text }, { role: 'assistant', content: result }]);
+
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(), role: 'assistant', content: result,
+      }));
+    } catch (e) {
+      const raw = String(e);
+      const friendly = raw.includes('401') || raw.includes('403')
+        ? 'Authentication failed. Check VITE_OLLAMA_API_KEY.'
+        : `Error: ${raw}`;
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(), role: 'assistant', content: friendly, isError: true,
+      }));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Turn the ideation transcript into a To Do card whose description tells
+  // Claude Code to create an ideas.md file with the distilled ideas.
+  const handleCreateTaskFromIdeas = async () => {
+    if (isCreatingIdeaCard || ideasHistory.length === 0) return;
+    setIsCreatingIdeaCard(true);
+
+    const loadingId = uuidv4();
+    setMessages(prev => [...prev, { id: loadingId, role: 'assistant', content: 'Distilling the conversation into a card…', isLoading: true }]);
+
+    try {
+      const { title, markdown } = await summarizeIdeasForTask(ideasHistory);
+
+      // Find the To Do list on this board (fall back to first list)
+      const boardLists = board.listIds.map(id => lists[id]).filter(Boolean);
+      const todoList = boardLists.find(l => /to\s*do|todo|backlog/i.test(l.title)) || boardLists[0];
+      if (!todoList) {
+        throw new Error('No lists available on this board — add a list first.');
+      }
+
+      const description = `Please create an \`ideas.md\` file in the project folder that captures the brainstorm below. Use the markdown verbatim as the file contents. After writing the file, commit it with message "docs: add ideas.md from brainstorm".
+
+# File: ideas.md
+
+${markdown}`;
+
+      const card = createCard(todoList.id, board.id, title || 'Ideas from brainstorm');
+      updateCard(card.id, { description });
+
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(),
+        role: 'assistant',
+        content: `Created a new card in "${todoList.title}": ${title}\n\nThe card tells Claude Code to write \`ideas.md\` with the distilled notes.`,
+        createdCards: [title],
+      }));
+    } catch (e) {
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(),
+        role: 'assistant',
+        content: `Failed to create card: ${String(e)}`,
+        isError: true,
+      }));
+    } finally {
+      setIsCreatingIdeaCard(false);
+    }
+  };
+
   // ─── Mode: Voice ───
   const handleVoice = async () => {
     if (!input.trim() || isLoading) return;
@@ -553,6 +715,8 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
       case 'schedule': return handleSchedule();
       case 'plan': return handlePlan();
       case 'chat': return handleChat();
+      case 'ideas': return handleIdeas();
+      case 'shortcut': return; // shortcut mode has no text input — user clicks cards
       case 'voice': return handleVoice();
     }
   };
@@ -650,8 +814,8 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
           </div>
         )}
 
-        {/* Model Picker (for schedule & plan modes) */}
-        {chatMode !== 'chat' && (
+        {/* Model Picker (for modes that hit the runner, not the pure-chat modes) */}
+        {chatMode !== 'chat' && chatMode !== 'ideas' && chatMode !== 'shortcut' && (
           <div className="ai-model-bar">
             <button
               className="ai-model-toggle"
@@ -691,6 +855,52 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
             <button className="ai-image-preview-remove" onClick={() => setPendingImage(null)} title="Remove image">
               <X size={14} />
             </button>
+          </div>
+        )}
+
+        {/* Shortcut mode — grid of effective shortcuts */}
+        {chatMode === 'shortcut' && (
+          <div className="ai-shortcut-bar">
+            {effectiveShortcuts.length === 0 ? (
+              <p className="ai-shortcut-empty">
+                No shortcuts yet — add some in Settings → Global Shortcuts or Board Shortcuts.
+              </p>
+            ) : (
+              <div className="ai-shortcut-grid">
+                {effectiveShortcuts.map(sc => (
+                  <button
+                    key={sc.id}
+                    className={`ai-shortcut-card ai-shortcut-card--${sc.source}`}
+                    onClick={() => handleRunShortcut(sc)}
+                    disabled={runningShortcutId !== null || !sc.prompt.trim() || !sc.name.trim()}
+                    title={sc.prompt || 'Empty shortcut — fill in the prompt in Settings'}
+                  >
+                    <span className="ai-shortcut-icon">{sc.icon || '⚡'}</span>
+                    <span className="ai-shortcut-name">{sc.name || '(unnamed)'}</span>
+                    <span className="ai-shortcut-source">{sc.source === 'global' ? 'global' : 'board'}</span>
+                    {runningShortcutId === sc.id && <Loader2 size={12} className="ai-spin" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Ideas — create card from the brainstorm so far */}
+        {chatMode === 'ideas' && ideasHistory.length >= 2 && (
+          <div className="ai-ideas-bar">
+            <button
+              className="ai-ideas-create-btn"
+              onClick={handleCreateTaskFromIdeas}
+              disabled={isCreatingIdeaCard}
+              title="Summarize this brainstorm into a To Do card that tells Claude Code to write ideas.md"
+            >
+              {isCreatingIdeaCard
+                ? <><Loader2 size={13} className="ai-spin" /><span>Creating card…</span></>
+                : <><FilePlus2 size={13} /><span>Create task from these ideas</span></>
+              }
+            </button>
+            <span className="ai-ideas-hint">{ideasHistory.length / 2} exchange{ideasHistory.length / 2 !== 1 ? 's' : ''} so far</span>
           </div>
         )}
 

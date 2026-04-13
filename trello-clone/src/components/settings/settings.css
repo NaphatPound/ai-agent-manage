@@ -194,6 +194,83 @@
   margin: 0 0 var(--spacing-sm);
 }
 
+/* Shortcut editor list */
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shortcut-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.shortcut-row-header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.shortcut-name {
+  flex: 1;
+}
+
+.shortcut-icon {
+  width: 44px;
+  text-align: center;
+}
+
+.shortcut-prompt {
+  width: 100%;
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+  resize: vertical;
+  min-height: 60px;
+}
+
+.shortcut-row-footer {
+  display: flex;
+  gap: 6px;
+}
+
+.shortcut-model {
+  max-width: 180px;
+}
+
+.shortcut-mode {
+  max-width: 140px;
+}
+
+.shortcut-workingdir {
+  flex: 1;
+}
+
+.shortcut-remove {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.shortcut-remove:hover {
+  background: rgba(235, 90, 70, 0.12);
+  color: #EB5A46;
+  border-color: #EB5A46;
+}
+
 .settings-spin {
   animation: settingsSpin 1s linear infinite;
 }
