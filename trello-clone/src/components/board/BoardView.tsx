@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { DndContext, closestCorners, DragEndEvent, DragOverEvent, DragStartEvent, PointerSensor, useSensor, useSensors, DragOverlay } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable';
@@ -56,6 +56,14 @@ const BoardView: React.FC = () => {
   const updateCard = useBoardStore(s => s.updateCard);
   const addComment = useBoardStore(s => s.addComment);
   const { activeCardId, closeCard, activeBoardMenuOpen } = useUIStore();
+  const setActiveBoardId = useUIStore(s => s.setActiveBoardId);
+
+  // Publish the currently-viewed board so global components (e.g. ClaudeTaskManager
+  // in the header) can attribute new runner tasks to this board's memory namespace.
+  useEffect(() => {
+    setActiveBoardId(boardId ?? null);
+    return () => setActiveBoardId(null);
+  }, [boardId, setActiveBoardId]);
   const [dragActiveId, setDragActiveId] = useState<string | null>(null);
   const [dragType, setDragType] = useState<'list' | 'card' | null>(null);
   const [showAssistant, setShowAssistant] = useState(false);
@@ -82,7 +90,7 @@ const BoardView: React.FC = () => {
     try {
       updateCard(cardId, { claudeTaskStatus: 'queued' });
       const selectedModel = useSettingsStore.getState().selectedModel;
-      const task = await createRunnerTask(prompt, WORKING_DIR || undefined, undefined, selectedModel || undefined);
+      const task = await createRunnerTask(prompt, WORKING_DIR || undefined, undefined, selectedModel || undefined, boardId);
       console.log('[Claude Runner] Task created:', task.id, 'status:', task.status);
       updateCard(cardId, { claudeTaskId: task.id, claudeTaskStatus: task.status });
       addComment(cardId, `🤖 Claude Code task started (ID: ${task.id}). Monitoring for completion…`);
@@ -91,7 +99,7 @@ const BoardView: React.FC = () => {
       updateCard(cardId, { claudeTaskStatus: undefined });
       addComment(cardId, `❌ Failed to start Claude Code task: ${String(e)}`);
     }
-  }, [updateCard, addComment]);
+  }, [updateCard, addComment, WORKING_DIR, boardId]);
 
   if (!board || !boardId) {
     return (

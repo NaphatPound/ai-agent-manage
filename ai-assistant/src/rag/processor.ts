@@ -50,7 +50,8 @@ export async function splitAndStore(
   docId: string,
   content: string,
   mode: 'sentence' | 'chunk' = 'chunk',
-  chunkSize: number = 200
+  chunkSize: number = 200,
+  extraMetadata?: Record<string, string>
 ): Promise<ChunkResult> {
   const parts = mode === 'sentence' ? splitSentences(content) : splitChunks(content, chunkSize);
 
@@ -59,7 +60,13 @@ export async function splitAndStore(
 
   for (let i = 0; i < parts.length; i++) {
     const chunkId = `${docId}_chunk_${i + 1}`;
-    await addDocument(chunkId, parts[i], { parent_id: docId, chunk_index: String(i + 1), total_chunks: String(parts.length) });
+    const metadata: Record<string, string> = {
+      ...(extraMetadata || {}),
+      parent_id: docId,
+      chunk_index: String(i + 1),
+      total_chunks: String(parts.length),
+    };
+    await addDocument(chunkId, parts[i], metadata);
     storedChunks.push({ id: chunkId, content: parts[i] });
   }
 

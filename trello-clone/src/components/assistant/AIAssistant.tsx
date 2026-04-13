@@ -237,7 +237,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
     setInput('');
     setIsLoading(true);
     try {
-      const task = await createRunnerTask(prompt, WORKING_DIR || undefined, undefined, localModel || undefined);
+      const task = await createRunnerTask(prompt, WORKING_DIR || undefined, undefined, localModel || undefined, board.id);
       if (todoList) {
         const card = createCard(todoList.id, board.id, prompt.slice(0, 60));
         updateCard(card.id, { description: prompt, claudeTaskId: task.id, claudeTaskStatus: task.status });

@@ -10,6 +10,7 @@ import {
   type RunnerTask, type RunnerTaskSummary, type RunnerWebSocket, type WsMessage, type RunnerModel
 } from '../../services/claudeRunner';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useUIStore } from '../../stores/uiStore';
 import './claude-task-manager.css';
 
 interface ClaudeTaskManagerProps {
@@ -19,6 +20,7 @@ interface ClaudeTaskManagerProps {
 const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
   const WORKING_DIR = useSettingsStore(s => s.workingDir);
   const globalModel = useSettingsStore(s => s.selectedModel);
+  const activeBoardId = useUIStore(s => s.activeBoardId);
   const [tasks, setTasks] = useState<RunnerTaskSummary[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<RunnerTask | null>(null);
@@ -129,7 +131,13 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
     if (!newPrompt.trim()) return;
     setIsCreating(true);
     try {
-      const task = await createRunnerTask(newPrompt.trim(), newWorkingDir || undefined, undefined, newModel || undefined);
+      const task = await createRunnerTask(
+        newPrompt.trim(),
+        newWorkingDir || undefined,
+        undefined,
+        newModel || undefined,
+        activeBoardId || undefined,
+      );
       setNewPrompt('');
       setShowNewTask(false);
       await fetchTasks();

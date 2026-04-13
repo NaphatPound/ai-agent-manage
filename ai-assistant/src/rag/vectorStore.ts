@@ -50,26 +50,55 @@ export async function getAllDocumentsWithEmbeddings(): Promise<DocumentWithEmbed
   }));
 }
 
-export async function searchDocuments(query: string, topK: number = 3): Promise<{ id: string; content: string; score: number }[]> {
+export async function searchDocuments(
+  query: string,
+  topK: number = 3,
+  namespace?: string
+): Promise<{ id: string; content: string; score: number }[]> {
   const count = await getDocumentCount();
   if (count === 0) return [];
 
   const queryEmbedding = await ollamaEmbed(query);
   const embeddingStr = `[${queryEmbedding.join(',')}]`;
 
-  const result = await pool.query(
-    `SELECT id, content, 1 - (embedding <=> $1::vector) AS score
-     FROM documents
-     ORDER BY embedding <=> $1::vector
-     LIMIT $2`,
-    [embeddingStr, topK]
-  );
+  const result = namespace
+    ? await pool.query(
+        `SELECT id, content, 1 - (embedding <=> $1::vector) AS score
+         FROM documents
+         WHERE metadata->>'namespace' = $2
+         ORDER BY embedding <=> $1::vector
+         LIMIT $3`,
+        [embeddingStr, namespace, topK]
+      )
+    : await pool.query(
+        `SELECT id, content, 1 - (embedding <=> $1::vector) AS score
+         FROM documents
+         ORDER BY embedding <=> $1::vector
+         LIMIT $2`,
+        [embeddingStr, topK]
+      );
 
   return result.rows.map((row) => ({
     id: row.id,
     content: row.content,
     score: parseFloat(row.score),
   }));
+}
+
+export interface NamespaceStat {
+  namespace: string;
+  count: number;
+}
+
+export async function listNamespaces(): Promise<NamespaceStat[]> {
+  const result = await pool.query(
+    `SELECT metadata->>'namespace' AS namespace, COUNT(*)::int AS count
+     FROM documents
+     WHERE metadata ? 'namespace'
+     GROUP BY metadata->>'namespace'
+     ORDER BY count DESC, namespace ASC`
+  );
+  return result.rows.map((r) => ({ namespace: r.namespace, count: r.count }));
 }
 
 export async function getDocumentCount(): Promise<number> {

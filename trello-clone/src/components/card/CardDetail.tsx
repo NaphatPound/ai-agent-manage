@@ -216,7 +216,7 @@ const CardDetail: React.FC<CardDetailProps> = ({ card, board, onClose }) => {
 
       updateCard(card.id, { claudeTaskStatus: 'queued' });
       const selectedModel = useSettingsStore.getState().selectedModel;
-      const task = await createRunnerTask(prompt, WORKING_DIR || undefined, undefined, selectedModel || undefined);
+      const task = await createRunnerTask(prompt, WORKING_DIR || undefined, undefined, selectedModel || undefined, card.boardId);
       updateCard(card.id, { claudeTaskId: task.id, claudeTaskStatus: task.status });
       addComment(card.id, `🤖 Claude Code task started (ID: ${task.id.slice(0, 8)}...).`);
     } catch (e) {

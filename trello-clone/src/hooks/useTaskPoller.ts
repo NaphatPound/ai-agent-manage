@@ -141,7 +141,7 @@ async function promoteNextCard(boardId: string, completedCard: { taskGroup?: str
   try {
     updateCard(nextCard.id, { claudeTaskStatus: 'queued' });
     const { workingDir, selectedModel } = useSettingsStore.getState();
-    const task = await createRunnerTask(prompt, workingDir || undefined, undefined, selectedModel || undefined);
+    const task = await createRunnerTask(prompt, workingDir || undefined, undefined, selectedModel || undefined, boardId);
     console.log(`[Auto-Promote] Claude task created: ${task.id}, status: ${task.status}`);
     updateCard(nextCard.id, { claudeTaskId: task.id, claudeTaskStatus: task.status });
     addComment(nextCard.id, `🤖 Claude Code task started (ID: ${task.id}).`);

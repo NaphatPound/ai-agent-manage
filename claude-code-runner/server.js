@@ -74,6 +74,16 @@ function providerFor(modelId) {
 // Gemini tasks fall back to silence-based completion (no ❯ prompt to watch).
 const GEMINI_IDLE_COMPLETION_MS = parseInt(process.env.GEMINI_IDLE_COMPLETION_MS || '15000');
 
+// ─── Auto-memory config ─────────────────────────────────────────
+// When a task finishes, summarize what happened via Ollama Cloud and persist it
+// both as a markdown file under MEMORY_DIR/<namespace>/ and as a chunked entry
+// in the ai-assistant RAG store (namespace-tagged). Disable with MEMORY_AUTO_SAVE=false.
+const MEMORY_AUTO_SAVE = process.env.MEMORY_AUTO_SAVE !== 'false';
+const MEMORY_DIR = process.env.MEMORY_DIR
+  || path.resolve(__dirname, '..', 'ai-assistant', 'memory');
+const MEMORY_SUMMARY_MODEL = process.env.MEMORY_SUMMARY_MODEL || 'minimax-m2.7:cloud';
+const MEMORY_OUTPUT_CHARS = parseInt(process.env.MEMORY_OUTPUT_CHARS || '4000');
+
 function loadModels() {
   const envModels = process.env.MODELS;
   if (envModels) {
@@ -188,12 +198,13 @@ app.use('/api', authMiddleware);
 const tasks = new Map();
 
 class Task {
-  constructor({ prompt, workingDir, callbackUrl, model }) {
+  constructor({ prompt, workingDir, callbackUrl, model, boardId }) {
     this.id = uuidv4();
     this.prompt = prompt;
     this.workingDir = workingDir || process.cwd();
     this.callbackUrl = callbackUrl || null;
     this.model = model || null;
+    this.boardId = boardId || null;
     this.status = 'queued';
     this.output = '';
     this.createdAt = new Date().toISOString();
@@ -212,6 +223,7 @@ class Task {
       workingDir: this.workingDir,
       callbackUrl: this.callbackUrl,
       model: this.model,
+      boardId: this.boardId,
       status: this.status,
       output: this.output,
       createdAt: this.createdAt,
@@ -440,6 +452,177 @@ function executeStallResponse(ptyProcess, task, analysis) {
     action: analysis.action,
     response: analysis.response || null,
   });
+}
+
+// ─── Auto-memory: summarize finished tasks and persist ──────────
+const MEMORY_SYSTEM_PROMPT = `You are a technical writer producing a concise memory note about an AI coding session that just finished.
+
+Output valid markdown only — no prose before or after, no code fences, no <think> tags.
+
+Fill in this exact template:
+
+# <6-10 word title describing what was done>
+**Goal:** <one sentence restating what the user asked for>
+**Outcome:** <one sentence on what actually happened; mention success or failure>
+**Key steps:**
+- <bullet>
+- <bullet>
+- <bullet>
+**Files:** <comma-separated list of files touched if visible in the output, else "n/a">
+
+Rules:
+- Base everything on the PROMPT and OUTPUT below. Do not invent details.
+- Keep the whole note under ~200 words.
+- If the task clearly failed, say so in Outcome and explain the cause in one bullet.`;
+
+function stripAnsiStandalone(str) {
+  return (str || '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+}
+
+function sanitizeNamespace(raw) {
+  if (!raw) return 'default';
+  const cleaned = String(raw).replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64);
+  return cleaned || 'default';
+}
+
+async function summarizeTaskViaOllama(task) {
+  if (!process.env.OLLAMA_AUTH_TOKEN && !/localhost|127\.0\.0\.1/.test(OLLAMA_URL)) {
+    // No credentials and not local — bail out, caller will fall back to raw
+    return null;
+  }
+
+  const target = new URL(OLLAMA_URL);
+  const apiPath = (target.pathname.replace(/\/$/, '') + '/api/chat') || '/api/chat';
+  const endpoint = `${target.protocol}//${target.host}${apiPath}`;
+
+  const cleanOutput = stripAnsiStandalone(task.output).slice(-MEMORY_OUTPUT_CHARS);
+  const duration = task.finishedAt && task.startedAt
+    ? Math.round((new Date(task.finishedAt).getTime() - new Date(task.startedAt).getTime()) / 1000)
+    : null;
+
+  const userContent = `PROMPT:
+${task.prompt.slice(0, 2000)}
+
+FINAL OUTPUT (tail):
+${cleanOutput}
+
+METADATA:
+- exit code: ${task.exitCode}
+- status: ${task.status}
+- model: ${task.model || 'default'}
+- provider: ${task.provider || 'unknown'}
+- duration: ${duration != null ? duration + 's' : 'n/a'}`;
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.OLLAMA_AUTH_TOKEN ? { 'Authorization': `Bearer ${process.env.OLLAMA_AUTH_TOKEN}` } : {}),
+      },
+      body: JSON.stringify({
+        model: MEMORY_SUMMARY_MODEL,
+        stream: false,
+        messages: [
+          { role: 'system', content: MEMORY_SYSTEM_PROMPT },
+          { role: 'user', content: userContent },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      console.error(`[Memory ${task.id}] Ollama summary ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return null;
+    }
+    const data = await res.json();
+    const raw = data.message?.content || '';
+    return raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim() || null;
+  } catch (err) {
+    console.error(`[Memory ${task.id}] Ollama summary failed:`, err.message);
+    return null;
+  }
+}
+
+function buildRawSummary(task) {
+  const cleanOutput = stripAnsiStandalone(task.output).slice(-MEMORY_OUTPUT_CHARS);
+  const duration = task.finishedAt && task.startedAt
+    ? Math.round((new Date(task.finishedAt).getTime() - new Date(task.startedAt).getTime()) / 1000)
+    : null;
+  const title = task.prompt.split('\n')[0].slice(0, 80) || 'Task';
+  return `# ${title}
+**Goal:** ${task.prompt.slice(0, 300)}
+**Outcome:** status=${task.status}, exit=${task.exitCode}${duration != null ? `, duration=${duration}s` : ''}
+**Key steps:**
+- (no LLM summary available — raw output tail below)
+**Files:** n/a
+
+## Raw output tail
+\`\`\`
+${cleanOutput}
+\`\`\`
+`;
+}
+
+async function saveTaskMemory(task) {
+  if (!MEMORY_AUTO_SAVE) return;
+  // Save completed and failed runs (both are useful history); only skip if
+  // there's literally no output at all.
+  if (!task.output || stripAnsiStandalone(task.output).trim().length < 20) return;
+
+  const namespace = sanitizeNamespace(task.boardId);
+  const summaryBody = (await summarizeTaskViaOllama(task)) || buildRawSummary(task);
+
+  // Prepend a machine-readable header so searches can re-discover the context
+  const header = `<!-- taskId: ${task.id} boardId: ${task.boardId || ''} namespace: ${namespace} model: ${task.model || ''} status: ${task.status} exit: ${task.exitCode} savedAt: ${new Date().toISOString()} -->\n`;
+  const content = header + summaryBody;
+
+  // 1. Filesystem mirror
+  try {
+    const dir = path.join(MEMORY_DIR, namespace);
+    fs.mkdirSync(dir, { recursive: true });
+    const filename = `${task.createdAt.replace(/[:.]/g, '-')}_${task.id}.md`;
+    fs.writeFileSync(path.join(dir, filename), content, 'utf8');
+    console.log(`[Memory ${task.id}] Wrote ${path.join(namespace, filename)}`);
+  } catch (err) {
+    console.error(`[Memory ${task.id}] FS write failed:`, err.message);
+  }
+
+  // 2. RAG store — POST to ai-assistant via the configured ASSISTANT_URL
+  try {
+    const target = new URL(ASSISTANT_URL);
+    const apiPath = (target.pathname.replace(/\/$/, '') + '/api/documents/split') || '/api/documents/split';
+    const endpoint = `${target.protocol}//${target.host}${apiPath}`;
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: `task-${task.id}`,
+        content,
+        mode: 'chunk',
+        chunkSize: 400,
+        metadata: {
+          namespace,
+          boardId: task.boardId || '',
+          taskId: task.id,
+          source: 'runner',
+          kind: 'task-summary',
+          model: task.model || '',
+          provider: task.provider || '',
+          status: task.status,
+          exitCode: String(task.exitCode),
+          savedAt: new Date().toISOString(),
+        },
+      }),
+    });
+    if (!res.ok) {
+      console.error(`[Memory ${task.id}] RAG store ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    console.log(`[Memory ${task.id}] Indexed into RAG namespace="${namespace}" chunks=${data.totalChunks ?? '?'}`);
+  } catch (err) {
+    console.error(`[Memory ${task.id}] RAG store failed:`, err.message);
+  }
 }
 
 // ─── Run Claude Code INTERACTIVELY via PTY ─────────────────────
@@ -672,6 +855,11 @@ function runTask(task) {
     task.ptyProcess = null;
     console.log(`[Task ${task.id}] PTY exited with code ${exitCode} — status: ${task.status}`);
     notifyStatusChange(task, { exitCode, finishedAt: task.finishedAt });
+
+    // Fire-and-forget: summarize + persist to memory (per-board namespace)
+    saveTaskMemory(task).catch((err) => {
+      console.error(`[Memory ${task.id}] save pipeline crashed:`, err.message);
+    });
   });
 
   // Step 1: Wait for shell to be ready, then type the CLI command
@@ -745,12 +933,18 @@ app.delete('/api/models/:id', (req, res) => {
 // ─── REST API ──────────────────────────────────────────────────
 app.post('/api/tasks', (req, res) => {
   try {
-    const { prompt, workingDir, callbackUrl, model } = req.body;
+    const { prompt, workingDir, callbackUrl, model, boardId } = req.body;
     if (!prompt || !prompt.trim()) {
       return res.status(400).json({ error: 'prompt is required' });
     }
 
-    const task = new Task({ prompt: prompt.trim(), workingDir, callbackUrl, model: model || null });
+    const task = new Task({
+      prompt: prompt.trim(),
+      workingDir,
+      callbackUrl,
+      model: model || null,
+      boardId: typeof boardId === 'string' && boardId.trim() ? boardId.trim() : null,
+    });
     tasks.set(task.id, task);
     runTask(task);
     res.status(201).json(task.toJSON());
@@ -886,5 +1080,6 @@ server.listen(PORT, () => {
   console.log('║   DELETE /api/tasks/:id       — Delete a task            ║');
   console.log('╚═══════════════════════════════════════════════════════════╝');
   console.log(`[Stall] detection=${STALL_DETECTION_ENABLED ? 'on' : 'off'} provider=${STALL_ANALYSIS_PROVIDER} model=${STALL_ANALYSIS_MODEL} timeout=${STALL_TIMEOUT_MS}ms`);
+  console.log(`[Memory] auto-save=${MEMORY_AUTO_SAVE ? 'on' : 'off'} model=${MEMORY_SUMMARY_MODEL} dir=${MEMORY_DIR}`);
   console.log('');
 });

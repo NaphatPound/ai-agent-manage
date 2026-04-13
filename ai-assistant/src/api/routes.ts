@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { orchestrate } from '../router';
 import { addDocument, getDocumentCount, clearDocuments } from '../rag';
-import { getAllDocumentsWithEmbeddings, searchDocuments } from '../rag/vectorStore';
+import { getAllDocumentsWithEmbeddings, searchDocuments, listNamespaces } from '../rag/vectorStore';
 import { splitAndStore, generateAndStoreQA, splitSentences, splitChunks } from '../rag/processor';
 import { listTools } from '../mcp';
 import { config } from '../utils/config';
@@ -113,14 +113,23 @@ router.delete('/documents', async (_req: Request, res: Response) => {
 // Split document into chunks and add to vector DB
 router.post('/documents/split', async (req: Request, res: Response) => {
   try {
-    const { id, content, mode, chunkSize } = req.body;
+    const { id, content, mode, chunkSize, metadata } = req.body;
 
     if (!id || !content) {
       res.status(400).json({ error: 'id and content are required' });
       return;
     }
 
-    const result = await splitAndStore(id, content, mode || 'chunk', chunkSize || 200);
+    // Normalize incoming metadata — must be a flat record of strings
+    const extraMetadata: Record<string, string> = {};
+    if (metadata && typeof metadata === 'object') {
+      for (const [k, v] of Object.entries(metadata)) {
+        if (v == null) continue;
+        extraMetadata[k] = typeof v === 'string' ? v : JSON.stringify(v);
+      }
+    }
+
+    const result = await splitAndStore(id, content, mode || 'chunk', chunkSize || 200, extraMetadata);
 
     res.json({
       success: true,
@@ -198,23 +207,36 @@ router.get('/documents/vectors', async (_req: Request, res: Response) => {
 // Search documents with similarity scores
 router.post('/documents/search', async (req: Request, res: Response) => {
   try {
-    const { query, topK } = req.body;
+    const { query, topK, namespace } = req.body;
 
     if (!query || typeof query !== 'string') {
       res.status(400).json({ error: 'query is required and must be a string' });
       return;
     }
 
-    const results = await searchDocuments(query, topK || 10);
+    const ns = typeof namespace === 'string' && namespace.trim() ? namespace.trim() : undefined;
+    const results = await searchDocuments(query, topK || 10, ns);
 
     res.json({
       query,
+      namespace: ns || null,
       results: results.map((r) => ({
         ...r,
         matchPercent: Math.round(r.score * 100),
       })),
       total: results.length,
     });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
+// List namespaces (memory folders) present in the vector store
+router.get('/memory/namespaces', async (_req: Request, res: Response) => {
+  try {
+    const namespaces = await listNamespaces();
+    res.json({ namespaces, total: namespaces.length });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
     res.status(500).json({ success: false, error: errorMessage });

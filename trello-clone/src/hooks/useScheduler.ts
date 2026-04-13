@@ -124,7 +124,7 @@ export function useScheduler(boardId: string) {
           const { workingDir, selectedModel } = useSettingsStore.getState();
           try {
             updateCard(card.id, { claudeTaskStatus: 'queued' });
-            const task = await createRunnerTask(prompt, workingDir || undefined, undefined, selectedModel || undefined);
+            const task = await createRunnerTask(prompt, workingDir || undefined, undefined, selectedModel || undefined, boardId);
             updateCard(card.id, { claudeTaskId: task.id, claudeTaskStatus: task.status });
             addComment(card.id, `🤖 Claude Code task started (ID: ${task.id}).`);
           } catch (e) {

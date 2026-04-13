@@ -69,12 +69,14 @@ export async function createRunnerTask(
   prompt: string,
   workingDir?: string,
   callbackUrl?: string,
-  model?: string
+  model?: string,
+  boardId?: string
 ): Promise<RunnerTask> {
   const body: Record<string, string> = { prompt };
   if (workingDir) body.workingDir = workingDir;
   if (callbackUrl) body.callbackUrl = callbackUrl;
   if (model) body.model = model;
+  if (boardId) body.boardId = boardId;
 
   const res = await fetch(`${RUNNER_BASE}/api/tasks`, {
     method: 'POST',
