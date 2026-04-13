@@ -1056,6 +1056,167 @@
       display: block;
     }
 
+    /* Chat Toolbar — model + namespace dropdowns */
+    .chat-toolbar-select {
+      appearance: none;
+      -webkit-appearance: none;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 28px 6px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238b92a8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      background-size: 10px 10px;
+      min-width: 140px;
+      transition: border-color 0.2s;
+    }
+
+    .chat-toolbar-select:hover,
+    .chat-toolbar-select:focus {
+      border-color: var(--accent);
+      outline: none;
+    }
+
+    .chat-toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .chat-toolbar-group .toolbar-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .chat-toolbar-sep {
+      width: 1px;
+      height: 18px;
+      background: var(--border);
+      margin: 0 4px;
+    }
+
+    /* Sources panel underneath assistant messages */
+    .sources-panel {
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.02);
+      overflow: hidden;
+    }
+
+    .sources-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    .sources-toggle:hover {
+      background: rgba(255,255,255,0.04);
+    }
+
+    .sources-toggle .caret {
+      display: inline-block;
+      transition: transform 0.2s;
+      margin-right: 6px;
+    }
+
+    .sources-panel.open .sources-toggle .caret {
+      transform: rotate(90deg);
+    }
+
+    .sources-list {
+      display: none;
+      padding: 4px 12px 12px;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .sources-panel.open .sources-list {
+      display: flex;
+    }
+
+    .source-card {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: var(--surface);
+      font-size: 12px;
+    }
+
+    .source-card-header {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .source-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+
+    .source-badge.board { background: rgba(116,185,255,0.15); color: var(--blue); }
+    .source-badge.task { background: rgba(255,255,255,0.06); color: var(--text-muted); font-family: 'Menlo', 'Monaco', monospace; font-weight: 500; }
+    .source-badge.score { background: rgba(0,184,148,0.15); color: var(--green); }
+    .source-badge.kind { background: rgba(253,203,110,0.15); color: var(--orange); }
+
+    .source-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+
+    .source-body {
+      color: var(--text);
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 120px;
+      overflow: hidden;
+      position: relative;
+      transition: max-height 0.2s;
+    }
+
+    .source-body.expanded {
+      max-height: none;
+    }
+
+    .source-body:not(.expanded)::after {
+      content: '';
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 24px;
+      background: linear-gradient(transparent, var(--surface));
+      pointer-events: none;
+    }
+
+    .source-body-expand {
+      margin-top: 6px;
+      font-size: 10px;
+      color: var(--accent);
+      cursor: pointer;
+      user-select: none;
+    }
+
     /* Document Modal */
     .modal-overlay {
       position: fixed;
@@ -1281,9 +1442,19 @@
             </div>
           </div>
           <div class="model-selector-bar" id="modelSelectorBar">
-            <span class="model-selector-label">Model:</span>
-            <div id="modelChips">
-              <span class="model-chip active" style="opacity:0.5;">Loading models...</span>
+            <div class="chat-toolbar-group">
+              <span class="toolbar-label">Model:</span>
+              <select id="modelSelect" class="chat-toolbar-select" onchange="selectModel(this.value)">
+                <option value="">Loading…</option>
+              </select>
+            </div>
+            <div class="chat-toolbar-sep"></div>
+            <div class="chat-toolbar-group">
+              <span class="toolbar-label">Scope:</span>
+              <select id="namespaceSelect" class="chat-toolbar-select" onchange="selectNamespace(this.value)">
+                <option value="">🌐 All boards</option>
+              </select>
+              <button class="chat-toolbar-select" style="min-width:0;padding:6px 10px;" onclick="loadNamespaces()" title="Refresh namespaces">&#x21bb;</button>
             </div>
           </div>
           <div class="input-area">
@@ -1444,6 +1615,8 @@
     let chatHistory = [];
     let selectedModel = null; // null = use server default
     let availableModels = [];
+    let selectedNamespace = ''; // '' = all boards (no namespace filter)
+    let availableNamespaces = [];
 
     // Document modal state
     let allDocsCache = {};
@@ -1488,8 +1661,9 @@
         }).join('');
         document.getElementById('toolsList').innerHTML = toolsHtml;
 
-        // Load models
+        // Load models + memory namespaces
         await loadModels();
+        await loadNamespaces();
       } catch {
         document.getElementById('statusDot').classList.add('offline');
         document.getElementById('statusText').textContent = 'Offline';
@@ -1497,38 +1671,56 @@
     }
 
     async function loadModels() {
+      const sel = document.getElementById('modelSelect');
       try {
         const res = await fetch(`${API}/api/models`).then(r => r.json());
         availableModels = res.models || [];
-        const defaultModel = res.default;
+        selectedModel = res.default || (availableModels[0] && availableModels[0].id) || null;
 
-        // Set default selection
-        selectedModel = defaultModel;
-
-        // Render chips
-        const chipsContainer = document.getElementById('modelChips');
-        chipsContainer.innerHTML = availableModels.map(m => `
-          <div class="model-chip-wrap">
-            <div class="model-chip ${m.id === selectedModel ? 'active' : ''}"
-                 onclick="selectModel('${m.id}')" data-model="${m.id}">
-              <span class="chip-icon">${m.icon}</span>
-              <span>${m.label}</span>
-              <span class="chip-speed ${m.speed}">${m.speed}</span>
-            </div>
-            <div class="model-chip-tooltip">${m.description}</div>
-          </div>
-        `).join('');
+        sel.innerHTML = availableModels.map(m => {
+          const label = `${m.label || m.id}${m.speed ? ` — ${m.speed}` : ''}`;
+          const selected = m.id === selectedModel ? 'selected' : '';
+          const title = (m.description || '').replace(/"/g, '&quot;');
+          return `<option value="${m.id}" title="${title}" ${selected}>${label}</option>`;
+        }).join('');
       } catch (err) {
         console.error('Failed to load models:', err);
-        document.getElementById('modelChips').innerHTML = '<span class="model-chip active">Default</span>';
+        sel.innerHTML = '<option value="">Default</option>';
       }
     }
 
     function selectModel(modelId) {
-      selectedModel = modelId;
-      document.querySelectorAll('.model-chip').forEach(chip => {
-        chip.classList.toggle('active', chip.dataset.model === modelId);
-      });
+      selectedModel = modelId || null;
+    }
+
+    // === MEMORY NAMESPACES ===
+    async function loadNamespaces() {
+      const sel = document.getElementById('namespaceSelect');
+      if (!sel) return;
+      try {
+        const res = await fetch(`${API}/api/memory/namespaces`).then(r => r.json());
+        availableNamespaces = res.namespaces || [];
+        const total = availableNamespaces.reduce((s, n) => s + (n.count || 0), 0);
+
+        const options = [`<option value="">🌐 All boards${total ? ` (${total})` : ''}</option>`];
+        for (const ns of availableNamespaces) {
+          const label = ns.namespace === 'default' ? '📂 default' : `📋 ${ns.namespace}`;
+          const sel2 = ns.namespace === selectedNamespace ? 'selected' : '';
+          options.push(`<option value="${ns.namespace}" ${sel2}>${label} (${ns.count})</option>`);
+        }
+        sel.innerHTML = options.join('');
+        // Re-apply current selection (may have been cleared if namespace no longer exists)
+        if (selectedNamespace && !availableNamespaces.find(n => n.namespace === selectedNamespace)) {
+          selectedNamespace = '';
+          sel.value = '';
+        }
+      } catch (err) {
+        console.error('Failed to load namespaces:', err);
+      }
+    }
+
+    function selectNamespace(ns) {
+      selectedNamespace = ns || '';
     }
 
     // === UPLOAD ===
@@ -1579,14 +1771,20 @@
       const typingId = showTyping();
       document.getElementById('sendBtn').disabled = true;
       try {
+        const body = {
+          message: msg,
+          history: chatHistory.slice(-10),
+          model: selectedModel,
+        };
+        if (selectedNamespace) body.namespace = selectedNamespace;
         const res = await fetch(`${API}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: msg, history: chatHistory.slice(-10), model: selectedModel }),
+          body: JSON.stringify(body),
         }).then(r => r.json());
         removeTyping(typingId);
         if (res.success) {
-          addMessage('assistant', res.response, res.path, res.classification, res.model);
+          addMessage('assistant', res.response, res.path, res.classification, res.model, res.sources, res.namespace);
           chatHistory.push({ role: 'user', content: msg });
           chatHistory.push({ role: 'assistant', content: res.response });
           queryCount++;
@@ -1602,7 +1800,59 @@
       input.focus();
     }
 
-    function addMessage(role, content, path, classification, modelUsed) {
+    // === Sources rendering ===
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function renderSourcesPanel(sources, namespace) {
+      if (!Array.isArray(sources) || sources.length === 0) return '';
+
+      const cards = sources.map((s) => {
+        const md = s.metadata || {};
+        const boardId = md.boardId || md.namespace || '';
+        const taskId = md.taskId || '';
+        const taskShort = taskId ? taskId.slice(0, 8) : '';
+        const score = typeof s.score === 'number' ? Math.round(s.score * 100) : null;
+        const savedAt = md.savedAt ? new Date(md.savedAt).toLocaleString() : '';
+        const kind = md.kind || '';
+
+        const badges = [];
+        if (boardId) badges.push(`<span class="source-badge board">📋 ${escapeHtml(boardId)}</span>`);
+        if (taskShort) badges.push(`<span class="source-badge task">#${escapeHtml(taskShort)}</span>`);
+        if (score != null) badges.push(`<span class="source-badge score">${score}%</span>`);
+        if (kind) badges.push(`<span class="source-badge kind">${escapeHtml(kind)}</span>`);
+
+        const body = escapeHtml(s.content || '');
+        const needsExpand = body.length > 400;
+
+        return `
+          <div class="source-card">
+            <div class="source-card-header">
+              ${badges.join('')}
+              ${savedAt ? `<span class="source-meta">${escapeHtml(savedAt)}</span>` : ''}
+            </div>
+            <div class="source-body${needsExpand ? '' : ' expanded'}">${body}</div>
+            ${needsExpand ? `<div class="source-body-expand" onclick="this.previousElementSibling.classList.toggle('expanded');this.textContent=this.previousElementSibling.classList.contains('expanded')?'Show less':'Show more'">Show more</div>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      const scopeLabel = namespace ? ` · scope: ${escapeHtml(namespace)}` : '';
+      return `
+        <div class="sources-panel" id="sources-${Date.now()}-${Math.random().toString(36).slice(2, 8)}">
+          <div class="sources-toggle" onclick="this.parentElement.classList.toggle('open')">
+            <span><span class="caret">▶</span>${sources.length} source${sources.length > 1 ? 's' : ''}${scopeLabel}</span>
+            <span style="font-size:10px;opacity:0.7;">click to expand</span>
+          </div>
+          <div class="sources-list">${cards}</div>
+        </div>
+      `;
+    }
+
+    function addMessage(role, content, path, classification, modelUsed, sources, namespace) {
       const container = document.getElementById('messages');
       const div = document.createElement('div');
       div.className = `message ${role}`;
@@ -1620,9 +1870,10 @@
           badgeHtml += ` <span style="font-size:10px;color:var(--text-muted);margin-left:4px;">${mLabel}</span>`;
         }
       }
+      const sourcesHtml = role === 'assistant' ? renderSourcesPanel(sources, namespace) : '';
       div.innerHTML = `
         <div class="avatar">${avatar}</div>
-        <div class="bubble">${badgeHtml}${formattedContent}</div>
+        <div class="bubble">${badgeHtml}${formattedContent}${sourcesHtml}</div>
       `;
       container.appendChild(div);
       container.scrollTop = container.scrollHeight;

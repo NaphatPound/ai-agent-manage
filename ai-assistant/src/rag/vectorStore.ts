@@ -50,11 +50,18 @@ export async function getAllDocumentsWithEmbeddings(): Promise<DocumentWithEmbed
   }));
 }
 
+export interface SearchResult {
+  id: string;
+  content: string;
+  score: number;
+  metadata: Record<string, string>;
+}
+
 export async function searchDocuments(
   query: string,
   topK: number = 3,
   namespace?: string
-): Promise<{ id: string; content: string; score: number }[]> {
+): Promise<SearchResult[]> {
   const count = await getDocumentCount();
   if (count === 0) return [];
 
@@ -63,7 +70,7 @@ export async function searchDocuments(
 
   const result = namespace
     ? await pool.query(
-        `SELECT id, content, 1 - (embedding <=> $1::vector) AS score
+        `SELECT id, content, metadata, 1 - (embedding <=> $1::vector) AS score
          FROM documents
          WHERE metadata->>'namespace' = $2
          ORDER BY embedding <=> $1::vector
@@ -71,7 +78,7 @@ export async function searchDocuments(
         [embeddingStr, namespace, topK]
       )
     : await pool.query(
-        `SELECT id, content, 1 - (embedding <=> $1::vector) AS score
+        `SELECT id, content, metadata, 1 - (embedding <=> $1::vector) AS score
          FROM documents
          ORDER BY embedding <=> $1::vector
          LIMIT $2`,
@@ -82,6 +89,7 @@ export async function searchDocuments(
     id: row.id,
     content: row.content,
     score: parseFloat(row.score),
+    metadata: row.metadata || {},
   }));
 }
 

@@ -62,14 +62,15 @@ router.get('/models', async (_req: Request, res: Response) => {
 // Main chat endpoint
 router.post('/chat', async (req: Request, res: Response) => {
   try {
-    const { message, history, model } = req.body;
+    const { message, history, model, namespace } = req.body;
 
     if (!message || typeof message !== 'string') {
       res.status(400).json({ error: 'Message is required and must be a string' });
       return;
     }
 
-    const result = await orchestrate(message, history || [], model || undefined);
+    const ns = typeof namespace === 'string' && namespace.trim() ? namespace.trim() : undefined;
+    const result = await orchestrate(message, history || [], model || undefined, ns);
 
     res.json({
       success: true,
