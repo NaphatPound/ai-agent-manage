@@ -12,53 +12,59 @@ single Express gateway. The three sources upstream (`/Users/administrator/Docume
 untouched — all edits happen in the copies here.
 
 ```
+package.json          Root launcher — install/build/start scripts
+setup.sh              One-shot bootstrap (host deps, DB, models, builds)
+start.sh              Launches ai-assistant + gateway via concurrently
+.env.example          Copy to .env; defaults work for a fresh install
 trello-clone/         React + Vite board UI (root `/`)
 claude-code-runner/   Express + node-pty gateway (`/api/*`, `/runner`, WS)
 claude-code-runner/mcp-server/   MCP server exposing runner + RAG tools
 ai-assistant/         TypeScript RAG / chat / MCP orchestrator (`/assistant`)
 ai-assistant/init-db.sql   pgvector extension bootstrap
-Dockerfile            Multi-stage build for the gateway image
-ai-assistant/Dockerfile    Separate image for the RAG service
-docker-compose.yml    3-service stack: db + ai-assistant + ai-agent-board
 ```
+
+The stack runs **natively on the host** — no Docker. Postgres (with
+pgvector), Ollama, and the `claude` CLI must be installed on the host;
+`setup.sh` handles this on macOS via Homebrew.
 
 ## Common commands
 
-The stack is **docker-compose native** — there is no top-level `package.json`.
-Everything runs through compose.
-
 ```bash
-docker compose up --build -d       # build + start (detached)
-docker compose logs -f             # tail all services
-docker compose logs -f ai-assistant
-docker compose ps                  # service health
-docker compose down                # stop (keeps volumes)
-docker compose down -v             # stop + wipe workspace + RAG db
+./setup.sh                 # first-time bootstrap (idempotent — re-run after pulls)
+./start.sh                 # launch ai-assistant + gateway together (same as npm start)
+npm start                  # alias for ./start.sh
+npm run dev                # identical to start.sh but without the preflight checks
 ```
 
-One-off container debugging:
+`start.sh` runs two Node processes side-by-side via `concurrently`:
+
+1. `ai-assistant` — RAG + chat service on `AI_ASSISTANT_PORT` (default 3000, internal)
+2. `claude-code-runner/server.js` — gateway on `PORT` (default 3456, host-facing)
+
+If either process exits non-zero, the other is killed (`--kill-others-on-fail`).
+
+Host-level service control (macOS / brew):
 
 ```bash
-docker compose exec ai-agent-board bash
-docker compose exec ai-assistant sh
-docker compose exec db psql -U postgres -d ai_assistant
+brew services start postgresql@16     # start Postgres
+brew services start ollama            # start Ollama daemon
+psql ai_assistant                     # open a psql shell to the RAG db
 ```
 
-Working inside a subproject locally (outside Docker) still uses its own
-toolchain:
+Working inside a subproject independently:
 
 ```bash
-# Frontend
-cd trello-clone && npm install && npm run dev        # vite dev server :5173
-cd trello-clone && npm run build                     # tsc -b && vite build (NOTE: tsc currently fails)
-cd trello-clone && npx vite build                    # bypass tsc, vite-only (this is what Docker uses)
+# Frontend (HMR on :5173; still calls the gateway on :3456 for APIs/WS)
+npm --prefix trello-clone run dev
+# Frontend production build (bypasses `tsc -b`, vite only — see note below)
+(cd trello-clone && npx vite build)
 
-# Runner backend
-cd claude-code-runner && npm install && node server.js
+# Runner gateway only
+node claude-code-runner/server.js
 
-# RAG service
-cd ai-assistant && npm install && npm run dev        # tsx src/index.ts
-cd ai-assistant && npm test                          # jest --forceExit --detectOpenHandles
+# RAG service only
+npm --prefix ai-assistant run dev              # tsx src/index.ts
+npm --prefix ai-assistant test                 # jest --forceExit --detectOpenHandles
 cd ai-assistant && npx jest src/__tests__/foo.test.ts   # single test file
 ```
 

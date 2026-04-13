@@ -1,0 +1,20 @@
+{
+  "name": "ai-agent-manage",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Native (no-Docker) launcher for trello-clone + claude-code-runner + ai-assistant",
+  "scripts": {
+    "setup": "./setup.sh",
+    "start": "./start.sh",
+    "install:all": "npm --prefix trello-clone install && npm --prefix claude-code-runner install && npm --prefix ai-assistant install",
+    "build:web": "npm --prefix trello-clone exec -- vite build",
+    "dev:assistant": "npm --prefix ai-assistant run dev",
+    "dev:runner": "node claude-code-runner/server.js",
+    "dev": "concurrently -n assistant,runner -c blue,green \"npm:dev:assistant\" \"npm:dev:runner\"",
+    "db:init": "psql \"$DATABASE_URL\" -f ai-assistant/init-db.sql",
+    "clean": "rm -rf trello-clone/dist trello-clone/node_modules claude-code-runner/node_modules ai-assistant/node_modules ai-assistant/dist"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

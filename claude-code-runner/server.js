@@ -27,8 +27,12 @@ const API_KEY = process.env.API_KEY || null;
 // Stall detection config
 const STALL_TIMEOUT_MS = parseInt(process.env.STALL_TIMEOUT_MS || '45000');       // 45s idle before analysis
 const STALL_MAX_RETRIES = parseInt(process.env.STALL_MAX_RETRIES || '5');         // max auto-responses per task
-const STALL_ANALYSIS_API_KEY = process.env.STALL_ANALYSIS_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-const STALL_ANALYSIS_MODEL = process.env.STALL_ANALYSIS_MODEL || 'claude-sonnet-4-20250514';
+const STALL_ANTHROPIC_KEY = process.env.STALL_ANALYSIS_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+// Auto-pick provider: prefer ollama cloud if OLLAMA_AUTH_TOKEN is set, else anthropic if a key is set.
+const STALL_ANALYSIS_PROVIDER = (process.env.STALL_ANALYSIS_PROVIDER
+  || (process.env.OLLAMA_AUTH_TOKEN ? 'ollama' : (STALL_ANTHROPIC_KEY ? 'anthropic' : 'none'))).toLowerCase();
+const STALL_ANALYSIS_MODEL = process.env.STALL_ANALYSIS_MODEL
+  || (STALL_ANALYSIS_PROVIDER === 'ollama' ? 'minimax-m2.7:cloud' : 'claude-sonnet-4-20250514');
 const STALL_DETECTION_ENABLED = process.env.STALL_DETECTION !== 'false';          // enabled by default
 const STALL_CONTEXT_CHARS = 2000;
 
@@ -256,28 +260,8 @@ function notifyStatusChange(task, extra = {}) {
 // ─── Stall Detection & AI Auto-Response ─────────────────────────
 let stallApiKeyWarned = false;
 
-async function analyzeStall(taskId, recentOutput) {
-  if (!STALL_ANALYSIS_API_KEY) {
-    if (!stallApiKeyWarned) {
-      console.log('[Stall] No STALL_ANALYSIS_API_KEY or ANTHROPIC_API_KEY set — stall analysis disabled');
-      stallApiKeyWarned = true;
-    }
-    return null;
-  }
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': STALL_ANALYSIS_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: STALL_ANALYSIS_MODEL,
-        max_tokens: 512,
-        system: `You are analyzing terminal output from Claude Code CLI that has stopped producing output for a while.
-Determine what Claude Code is waiting for and respond with ONLY a JSON object (no markdown, no explanation):
+const STALL_SYSTEM_PROMPT = `You are analyzing terminal output from Claude Code CLI that has stopped producing output for a while.
+Determine what Claude Code is waiting for and respond with ONLY a JSON object (no markdown, no explanation, no <think> tags):
 {
   "situation": "brief description of what's happening",
   "action": "press_enter" | "press_yes" | "press_no" | "type_text" | "send_instruction" | "skip",
@@ -295,35 +279,97 @@ Rules:
 - If you cannot determine what's happening, use "skip"
 - If confidence is below 0.4, use "skip"
 - Never send passwords, secrets, or destructive commands
-- For send_instruction: always instruct Claude to FIND and SUGGEST solutions, not execute directly`,
-        messages: [
-          {
-            role: 'user',
-            content: `Claude Code has been idle with no output for ${STALL_TIMEOUT_MS / 1000} seconds. Here is the last terminal output:\n\n${recentOutput}`,
-          },
-        ],
-      }),
-    });
+- For send_instruction: always instruct Claude to FIND and SUGGEST solutions, not execute directly`;
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error(`[Task ${taskId}] Stall API error ${res.status}: ${errText}`);
+function buildStallUserMessage(recentOutput) {
+  return `Claude Code has been idle with no output for ${STALL_TIMEOUT_MS / 1000} seconds. Here is the last terminal output:\n\n${recentOutput}`;
+}
+
+function parseStallJson(text) {
+  // Strip <think>...</think> tags (minimax / qwen reasoning models)
+  const cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  try { return JSON.parse(jsonMatch[0]); } catch { return null; }
+}
+
+async function analyzeStallViaAnthropic(taskId, recentOutput) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': STALL_ANTHROPIC_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: STALL_ANALYSIS_MODEL,
+      max_tokens: 512,
+      system: STALL_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: buildStallUserMessage(recentOutput) }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`[Task ${taskId}] Stall Anthropic error ${res.status}: ${errText}`);
+    return null;
+  }
+  const data = await res.json();
+  return data.content?.[0]?.text || '';
+}
+
+async function analyzeStallViaOllama(taskId, recentOutput) {
+  const target = new URL(OLLAMA_URL);
+  const apiPath = (target.pathname.replace(/\/$/, '') + '/api/chat') || '/api/chat';
+  const endpoint = `${target.protocol}//${target.host}${apiPath}`;
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(process.env.OLLAMA_AUTH_TOKEN ? { 'Authorization': `Bearer ${process.env.OLLAMA_AUTH_TOKEN}` } : {}),
+    },
+    body: JSON.stringify({
+      model: STALL_ANALYSIS_MODEL,
+      stream: false,
+      messages: [
+        { role: 'system', content: STALL_SYSTEM_PROMPT },
+        { role: 'user', content: buildStallUserMessage(recentOutput) },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`[Task ${taskId}] Stall Ollama error ${res.status}: ${errText}`);
+    return null;
+  }
+  const data = await res.json();
+  return data.message?.content || '';
+}
+
+async function analyzeStall(taskId, recentOutput) {
+  if (STALL_ANALYSIS_PROVIDER === 'none') {
+    if (!stallApiKeyWarned) {
+      console.log('[Stall] No OLLAMA_AUTH_TOKEN or ANTHROPIC_API_KEY set — stall analysis disabled');
+      stallApiKeyWarned = true;
+    }
+    return null;
+  }
+
+  try {
+    const text = STALL_ANALYSIS_PROVIDER === 'ollama'
+      ? await analyzeStallViaOllama(taskId, recentOutput)
+      : await analyzeStallViaAnthropic(taskId, recentOutput);
+    if (!text) return null;
+
+    const analysis = parseStallJson(text);
+    if (!analysis) {
+      console.error(`[Task ${taskId}] Stall analysis returned non-JSON: ${text.slice(0, 200)}`);
       return null;
     }
 
-    const data = await res.json();
-    const text = data.content?.[0]?.text || '';
-
-    // Extract JSON from response (handle possible markdown wrapping)
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error(`[Task ${taskId}] Stall analysis returned non-JSON: ${text}`);
-      return null;
-    }
-
-    const analysis = JSON.parse(jsonMatch[0]);
-
-    if (analysis.confidence < 0.4) {
+    if (typeof analysis.confidence === 'number' && analysis.confidence < 0.4) {
       console.log(`[Task ${taskId}] Stall analysis low confidence (${analysis.confidence}): ${analysis.situation}`);
       return { ...analysis, action: 'skip' };
     }
@@ -795,5 +841,6 @@ server.listen(PORT, () => {
   console.log('║   POST   /api/tasks/:id/stop  — Stop a task             ║');
   console.log('║   DELETE /api/tasks/:id       — Delete a task            ║');
   console.log('╚═══════════════════════════════════════════════════════════╝');
+  console.log(`[Stall] detection=${STALL_DETECTION_ENABLED ? 'on' : 'off'} provider=${STALL_ANALYSIS_PROVIDER} model=${STALL_ANALYSIS_MODEL} timeout=${STALL_TIMEOUT_MS}ms`);
   console.log('');
 });
