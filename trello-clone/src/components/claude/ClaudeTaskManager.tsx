@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import {
   listRunnerTasks, getRunnerTask, createRunnerTask, stopRunnerTask,
-  deleteRunnerTask, connectRunnerWs, listModels,
+  deleteRunnerTask, connectRunnerWs, listModels, createRunnerTaskGroup,
   type RunnerTask, type RunnerTaskSummary, type RunnerWebSocket, type WsMessage, type RunnerModel
 } from '../../services/claudeRunner';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -35,6 +35,10 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
   const [newWorkingDir, setNewWorkingDir] = useState(WORKING_DIR);
   const [newModel, setNewModel] = useState(globalModel);
   const [models, setModels] = useState<RunnerModel[]>([]);
+  // Pair-programming toggle + per-role models
+  const [pairEnabled, setPairEnabled] = useState(false);
+  const [pairSaModel, setPairSaModel] = useState('');
+  const [pairDevModel, setPairDevModel] = useState('');
   // Sync defaults when settings change
   useEffect(() => { setNewWorkingDir(WORKING_DIR); }, [WORKING_DIR]);
   useEffect(() => { setNewModel(globalModel); }, [globalModel]);
@@ -144,17 +148,33 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
     if (!newPrompt.trim()) return;
     setIsCreating(true);
     try {
-      const task = await createRunnerTask(
-        newPrompt.trim(),
-        newWorkingDir || undefined,
-        undefined,
-        newModel || undefined,
-        activeBoardId || undefined,
-      );
-      setNewPrompt('');
-      setShowNewTask(false);
-      await fetchTasks();
-      selectTask(task.id);
+      if (pairEnabled) {
+        // Spawn a pair-programming group: SA (planner) + DEV (coder) talking
+        // to each other over the runner's pair bus.
+        const group = await createRunnerTaskGroup(newPrompt.trim(), {
+          workingDir: newWorkingDir || undefined,
+          boardId: activeBoardId || undefined,
+          saModel: pairSaModel || newModel || undefined,
+          devModel: pairDevModel || newModel || undefined,
+        });
+        setNewPrompt('');
+        setShowNewTask(false);
+        await fetchTasks();
+        // Auto-select the SA task so the user sees the plan being drafted.
+        selectTask(group.saTaskId);
+      } else {
+        const task = await createRunnerTask(
+          newPrompt.trim(),
+          newWorkingDir || undefined,
+          undefined,
+          newModel || undefined,
+          activeBoardId || undefined,
+        );
+        setNewPrompt('');
+        setShowNewTask(false);
+        await fetchTasks();
+        selectTask(task.id);
+      }
     } catch (e) {
       setError(`Failed to create task: ${String(e)}`);
     } finally {
@@ -294,19 +314,64 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
                     onChange={e => setNewWorkingDir(e.target.value)}
                   />
                 </div>
-                <div className="ctm-new-task-model">
-                  <Cpu size={12} />
-                  <select
-                    className="ctm-new-task-model-select"
-                    value={newModel}
-                    onChange={e => setNewModel(e.target.value)}
-                  >
-                    <option value="">Default model</option>
-                    {models.map(m => (
-                      <option key={m.id} value={m.id}>{m.name || m.id}</option>
-                    ))}
-                  </select>
-                </div>
+                {!pairEnabled && (
+                  <div className="ctm-new-task-model">
+                    <Cpu size={12} />
+                    <select
+                      className="ctm-new-task-model-select"
+                      value={newModel}
+                      onChange={e => setNewModel(e.target.value)}
+                    >
+                      <option value="">Default model</option>
+                      {models.map(m => (
+                        <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <label className="ctm-pair-toggle">
+                  <input
+                    type="checkbox"
+                    checked={pairEnabled}
+                    onChange={e => setPairEnabled(e.target.checked)}
+                  />
+                  <span className="ctm-pair-toggle-label">
+                    👥 Pair programming (SA + DEV)
+                  </span>
+                </label>
+                {pairEnabled && (
+                  <div className="ctm-pair-models">
+                    <div className="ctm-pair-model-row">
+                      <span className="ctm-pair-role-label">SA (planner)</span>
+                      <select
+                        className="ctm-new-task-model-select"
+                        value={pairSaModel}
+                        onChange={e => setPairSaModel(e.target.value)}
+                      >
+                        <option value="">Default — use the smart model</option>
+                        {models.map(m => (
+                          <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="ctm-pair-model-row">
+                      <span className="ctm-pair-role-label">DEV (coder)</span>
+                      <select
+                        className="ctm-new-task-model-select"
+                        value={pairDevModel}
+                        onChange={e => setPairDevModel(e.target.value)}
+                      >
+                        <option value="">Default — use a cheaper model to save budget</option>
+                        {models.map(m => (
+                          <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className="ctm-pair-hint">
+                      SA plans and reviews; DEV reads the plan and writes code. They talk to each other via a <code>pair</code> CLI (send / wait / read / complete). Pick a smart model for SA and a cheaper one for DEV to save budget.
+                    </p>
+                  </div>
+                )}
                 <div className="ctm-new-task-actions">
                   <button className="ctm-btn ctm-btn--secondary" onClick={() => setShowNewTask(false)}>
                     Cancel
@@ -359,6 +424,11 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
                         {getStatusIcon(task.status)}
                         {task.status}
                       </span>
+                      {task.pairRole && (
+                        <span className={`ctm-pair-badge ctm-pair-badge--${task.pairRole}`} title={`Pair programming — ${task.pairRole === 'sa' ? 'planner' : 'coder'}`}>
+                          👥 {task.pairRole === 'sa' ? 'SA' : 'DEV'}
+                        </span>
+                      )}
                       <div className="ctm-task-item-actions">
                         {(task.status === 'running' || task.status === 'queued') && (
                           <button

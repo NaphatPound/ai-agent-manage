@@ -197,11 +197,184 @@ function authMiddleware(req, res, next) {
 
 app.use('/api', authMiddleware);
 
+// ─── Pair-programming bus ──────────────────────────────────────
+// A lightweight in-memory message bus so two Claude Code sessions (SA and
+// DEV) running in the same TaskGroup can talk to each other via a tiny
+// `pair` CLI shipped in claude-code-runner/bin/pair.
+//
+// On disk: we write the script once at startup to BIN_DIR. Each PTY in a
+// group is launched with `PATH=<BIN_DIR>:$PATH` plus PAIR_* env vars so the
+// `pair` command just works from Claude's Bash tool.
+
+const PAIR_BIN_DIR = path.join(__dirname, 'bin');
+const PAIR_BIN_PATH = path.join(PAIR_BIN_DIR, 'pair');
+
+// { id, saTaskId, devTaskId, boardId, createdAt, messages: [{seq, from, content, timestamp}], completedBy: Set, waiters: [{role, resolve}] }
+const taskGroups = new Map();
+
+function ensurePairBinary() {
+  try {
+    fs.mkdirSync(PAIR_BIN_DIR, { recursive: true });
+  } catch {}
+  const script = `#!/usr/bin/env node
+/* eslint-disable */
+// pair — AI-to-AI message bus CLI for claude-code-runner pair programming.
+// Reads PAIR_BASE_URL / PAIR_GROUP_ID / PAIR_ROLE from env and talks to the
+// runner's /api/pair/:groupId/* endpoints.
+const http = require('http');
+const https = require('https');
+const url = require('url');
+
+const BASE = process.env.PAIR_BASE_URL;
+const GROUP = process.env.PAIR_GROUP_ID;
+const ROLE = process.env.PAIR_ROLE;
+
+if (!BASE || !GROUP || !ROLE) {
+  console.error('pair: PAIR_BASE_URL / PAIR_GROUP_ID / PAIR_ROLE must be set');
+  process.exit(1);
+}
+
+const SINCE_FILE = \`/tmp/pair-since-\${GROUP}-\${ROLE}\`;
+
+function request(method, urlStr, bodyObj) {
+  return new Promise((resolve, reject) => {
+    const u = url.parse(urlStr);
+    const mod = u.protocol === 'https:' ? https : http;
+    const body = bodyObj ? JSON.stringify(bodyObj) : undefined;
+    const req = mod.request(
+      {
+        hostname: u.hostname,
+        port: u.port || (u.protocol === 'https:' ? 443 : 80),
+        path: u.path,
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, data: JSON.parse(data || '{}') }); }
+          catch { resolve({ status: res.statusCode, data }); }
+        });
+      }
+    );
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function fmtMessage(m) {
+  const t = (m.timestamp || '').slice(11, 19);
+  return \`[\${t}] \${String(m.from || '').toUpperCase()}: \${m.content}\`;
+}
+
+async function main() {
+  const cmd = process.argv[2];
+  const fs = require('fs');
+  try {
+    if (cmd === 'send') {
+      const msg = process.argv.slice(3).join(' ') || (fs.readFileSync(0, 'utf8')).trim();
+      if (!msg) { console.error('pair send: empty message'); process.exit(1); }
+      const res = await request('POST', \`\${BASE}/\${GROUP}/messages\`, { from: ROLE, content: msg });
+      if (res.status >= 300) { console.error('pair send failed:', res.status, res.data); process.exit(1); }
+      console.log(\`sent → \${msg.length} chars\`);
+      return;
+    }
+    if (cmd === 'read') {
+      const res = await request('GET', \`\${BASE}/\${GROUP}/messages\`, null);
+      if (res.status >= 300) { console.error('pair read failed:', res.status, res.data); process.exit(1); }
+      for (const m of (res.data.messages || [])) console.log(fmtMessage(m));
+      return;
+    }
+    if (cmd === 'wait') {
+      let since = 0;
+      try { since = parseInt(fs.readFileSync(SINCE_FILE, 'utf8'), 10) || 0; } catch {}
+      const timeout = parseInt(process.argv[3] || '60000', 10);
+      const res = await request('GET', \`\${BASE}/\${GROUP}/messages?since=\${since}&waitFor=\${ROLE}&timeout=\${timeout}\`, null);
+      if (res.status >= 300) { console.error('pair wait failed:', res.status, res.data); process.exit(1); }
+      const messages = res.data.messages || [];
+      if (messages.length === 0) {
+        console.log('(no new messages before timeout)');
+        return;
+      }
+      for (const m of messages) console.log(fmtMessage(m));
+      const last = messages[messages.length - 1];
+      try { fs.writeFileSync(SINCE_FILE, String(last.seq)); } catch {}
+      return;
+    }
+    if (cmd === 'complete') {
+      const res = await request('POST', \`\${BASE}/\${GROUP}/complete\`, { from: ROLE });
+      if (res.status >= 300) { console.error('pair complete failed:', res.status, res.data); process.exit(1); }
+      console.log('completion acknowledged');
+      return;
+    }
+    console.error('Usage: pair {send <msg>|read|wait [timeoutMs]|complete}');
+    process.exit(1);
+  } catch (err) {
+    console.error('pair error:', err.message);
+    process.exit(1);
+  }
+}
+
+main();
+`;
+  try {
+    fs.writeFileSync(PAIR_BIN_PATH, script, { mode: 0o755 });
+    fs.chmodSync(PAIR_BIN_PATH, 0o755);
+  } catch (err) {
+    console.error('Failed to write pair binary:', err.message);
+  }
+}
+
+ensurePairBinary();
+
+function addPairEnv(baseEnv, group, role) {
+  const pairBase = `http://localhost:${process.env.PORT || PORT}/api/pair`;
+  const path = `${PAIR_BIN_DIR}:${baseEnv.PATH || process.env.PATH || ''}`;
+  return {
+    ...baseEnv,
+    PATH: path,
+    PAIR_BASE_URL: pairBase,
+    PAIR_GROUP_ID: group.id,
+    PAIR_ROLE: role,
+  };
+}
+
+function broadcastPair(group, event) {
+  // Fan out pair-bus events to any task subscribers that have the
+  // corresponding taskId registered — lets xterm viewers see messages live.
+  const data = JSON.stringify(event);
+  const sa = tasks.get(group.saTaskId);
+  const dev = tasks.get(group.devTaskId);
+  for (const task of [sa, dev].filter(Boolean)) {
+    task.subscribers.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    });
+  }
+}
+
+function pairResolveWaiters(group, targetRole) {
+  const remaining = [];
+  for (const w of group.waiters) {
+    if (w.role === targetRole) {
+      const msgs = group.messages.filter((m) => m.seq > w.since);
+      w.resolve(msgs);
+    } else {
+      remaining.push(w);
+    }
+  }
+  group.waiters = remaining;
+}
+
 // ─── Task Store (in-memory) ────────────────────────────────────
 const tasks = new Map();
 
 class Task {
-  constructor({ prompt, workingDir, callbackUrl, model, boardId, mode }) {
+  constructor({ prompt, workingDir, callbackUrl, model, boardId, mode, pairGroupId, pairRole }) {
     this.id = uuidv4();
     this.prompt = prompt;
     this.workingDir = workingDir || process.cwd();
@@ -209,6 +382,8 @@ class Task {
     this.model = model || null;
     this.boardId = boardId || null;
     this.mode = mode === 'loop' ? 'loop' : 'one-time';
+    this.pairGroupId = pairGroupId || null;
+    this.pairRole = pairRole || null; // 'sa' | 'dev' | null
     this.status = 'queued';
     this.awaitingSituation = null;
     this.awaitingQuestion = null;
@@ -231,6 +406,8 @@ class Task {
       model: this.model,
       boardId: this.boardId,
       mode: this.mode,
+      pairGroupId: this.pairGroupId,
+      pairRole: this.pairRole,
       status: this.status,
       output: this.output,
       createdAt: this.createdAt,
@@ -266,6 +443,8 @@ class Task {
       createdAt: this.createdAt,
       startedAt: this.startedAt,
       finishedAt: this.finishedAt,
+      pairGroupId: this.pairGroupId,
+      pairRole: this.pairRole,
     };
   }
 }
@@ -676,13 +855,18 @@ function runTask(task) {
     : (process.env.SHELL || (fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash'));
 
   let ptyProcess;
+  let spawnEnv = { ...process.env, FORCE_COLOR: '1' };
+  if (task.pairGroupId && task.pairRole) {
+    const group = taskGroups.get(task.pairGroupId);
+    if (group) spawnEnv = addPairEnv(spawnEnv, group, task.pairRole);
+  }
   try {
     ptyProcess = pty.spawn(shell, [], {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,
       cwd: task.workingDir,
-      env: { ...process.env, FORCE_COLOR: '1' },
+      env: spawnEnv,
     });
   } catch (err) {
     console.error('Failed to spawn PTY:', err.message);
@@ -1218,6 +1402,102 @@ app.post('/api/fs/write', (req, res) => {
   }
 });
 
+// ─── Open project folder in external editor / terminal ────────
+// A set of known targets keyed by tool id. Each entry describes either a
+// plain shell command (cli) or the macOS `open -a <App>` fallback, or both
+// — the handler tries the CLI first when available.
+const OPEN_TARGETS = {
+  finder:      { label: 'Finder',              open: true },
+  terminal:    { label: 'Terminal',            app: 'Terminal' },
+  iterm:       { label: 'iTerm',               app: 'iTerm' },
+  vscode:      { label: 'VS Code',             cli: 'code',       app: 'Visual Studio Code' },
+  cursor:      { label: 'Cursor',              cli: 'cursor',     app: 'Cursor' },
+  windsurf:    { label: 'Windsurf',            cli: 'windsurf',   app: 'Windsurf' },
+  antigravity: { label: 'Google Antigravity',  cli: 'antigravity', app: 'Antigravity' },
+};
+
+function hasCliCommand(name) {
+  try {
+    require('child_process').execSync(`command -v ${name.replace(/[^a-zA-Z0-9_-]/g, '')}`, {
+      stdio: 'ignore',
+      shell: '/bin/bash',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+app.get('/api/open/targets', (_req, res) => {
+  const list = Object.entries(OPEN_TARGETS).map(([id, cfg]) => ({
+    id,
+    label: cfg.label,
+    kind: cfg.open ? 'browser' : cfg.cli ? 'editor' : 'terminal',
+  }));
+  res.json({ targets: list });
+});
+
+app.post('/api/open', (req, res) => {
+  try {
+    const body = req.body || {};
+    const toolId = String(body.tool || '').trim();
+    if (!toolId || !OPEN_TARGETS[toolId]) {
+      return res.status(400).json({ error: `Unknown tool: ${toolId}` });
+    }
+    const target = resolveSafePath(body.path);
+
+    // Safety: must exist and live under $HOME
+    const home = os.homedir();
+    const homeWithSep = home.endsWith(path.sep) ? home : home + path.sep;
+    if (target !== home && !target.startsWith(homeWithSep)) {
+      return res.status(403).json({
+        error: `For safety, only paths under your home directory can be opened (${home})`,
+      });
+    }
+    if (!fs.existsSync(target)) {
+      return res.status(404).json({ error: 'Path does not exist', path: target });
+    }
+
+    const cfg = OPEN_TARGETS[toolId];
+    let cmd;
+    let args;
+    let strategy;
+
+    if (cfg.open) {
+      // Plain `open <path>` → default handler (Finder for directories)
+      cmd = 'open';
+      args = [target];
+      strategy = 'open';
+    } else if (cfg.cli && hasCliCommand(cfg.cli)) {
+      cmd = cfg.cli;
+      args = [target];
+      strategy = 'cli';
+    } else if (cfg.app) {
+      cmd = 'open';
+      args = ['-a', cfg.app, target];
+      strategy = 'app';
+    } else if (cfg.cli) {
+      // Last resort: try the CLI even though it wasn't on PATH
+      cmd = cfg.cli;
+      args = [target];
+      strategy = 'cli-fallback';
+    } else {
+      return res.status(500).json({ error: `No launch strategy for ${toolId}` });
+    }
+
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    child.on('error', (err) => {
+      console.error(`[Open] ${toolId} spawn error:`, err.message);
+    });
+    child.unref();
+
+    console.log(`[Open] ${toolId} (${strategy}): ${cmd} ${args.join(' ')}`);
+    res.json({ ok: true, tool: toolId, label: cfg.label, path: target, strategy });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Skill library ──────────────────────────────────────────────
 // Bundled markdown files that users can preview and copy into their
 // project's .claude/skills/ directory with one click. Files live in
@@ -1294,6 +1574,215 @@ app.get('/api/skills/library/:name', (req, res) => {
     const { meta, body } = parseSkillFrontmatter(raw);
     res.json({ name, raw, body, meta });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Pair-programming bus endpoints ─────────────────────────────
+app.post('/api/pair/:groupId/messages', (req, res) => {
+  const group = taskGroups.get(req.params.groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+  const { from, content } = req.body || {};
+  if (!from || !content) return res.status(400).json({ error: 'from and content required' });
+  const seq = group.messages.length + 1;
+  const message = { seq, from, content: String(content), timestamp: new Date().toISOString() };
+  group.messages.push(message);
+  console.log(`[Pair ${group.id}] ${String(from).toUpperCase()} → ${message.content.slice(0, 80)}`);
+  // Notify any long-pollers waiting for the OTHER role
+  const targetRole = from === 'sa' ? 'dev' : from === 'dev' ? 'sa' : null;
+  if (targetRole) pairResolveWaiters(group, targetRole);
+  broadcastPair(group, { type: 'pair_message', groupId: group.id, message });
+  res.json({ ok: true, message });
+});
+
+app.get('/api/pair/:groupId/messages', (req, res) => {
+  const group = taskGroups.get(req.params.groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+  const since = parseInt(req.query.since || '0', 10);
+  const waitFor = req.query.waitFor;
+  const timeoutMs = Math.min(parseInt(req.query.timeout || '0', 10) || 0, 120000);
+
+  const available = group.messages.filter((m) => m.seq > since);
+  if (available.length > 0 || !waitFor || timeoutMs <= 0) {
+    return res.json({ messages: available });
+  }
+
+  // Long-poll: register a waiter, resolve when a message arrives or timeout.
+  const waiter = {
+    role: String(waitFor),
+    since,
+    resolve: (msgs) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      res.json({ messages: msgs });
+    },
+  };
+  let resolved = false;
+  const timer = setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    group.waiters = group.waiters.filter((w) => w !== waiter);
+    res.json({ messages: [] });
+  }, timeoutMs);
+  group.waiters.push(waiter);
+
+  req.on('close', () => {
+    if (resolved) return;
+    resolved = true;
+    clearTimeout(timer);
+    group.waiters = group.waiters.filter((w) => w !== waiter);
+  });
+});
+
+app.post('/api/pair/:groupId/complete', (req, res) => {
+  const group = taskGroups.get(req.params.groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+  const from = String((req.body && req.body.from) || '').trim();
+  if (!from) return res.status(400).json({ error: 'from required' });
+  group.completedBy.add(from);
+  console.log(`[Pair ${group.id}] ${from.toUpperCase()} signalled complete (${group.completedBy.size}/2)`);
+  broadcastPair(group, { type: 'pair_complete', groupId: group.id, from, completedBy: Array.from(group.completedBy) });
+  res.json({ ok: true, completedBy: Array.from(group.completedBy) });
+});
+
+app.get('/api/task-groups', (_req, res) => {
+  const list = Array.from(taskGroups.values()).map((g) => ({
+    id: g.id,
+    boardId: g.boardId,
+    saTaskId: g.saTaskId,
+    devTaskId: g.devTaskId,
+    messageCount: g.messages.length,
+    completedBy: Array.from(g.completedBy),
+    createdAt: g.createdAt,
+  }));
+  res.json(list);
+});
+
+app.get('/api/task-groups/:id', (req, res) => {
+  const group = taskGroups.get(req.params.id);
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+  res.json({
+    id: group.id,
+    boardId: group.boardId,
+    saTaskId: group.saTaskId,
+    devTaskId: group.devTaskId,
+    messages: group.messages,
+    completedBy: Array.from(group.completedBy),
+    createdAt: group.createdAt,
+  });
+});
+
+// Prompt wrappers for SA and DEV roles — inserted before the user's task so
+// Claude knows who it is, how to talk to its pair, and what the shared goal is.
+const PAIR_SA_PROMPT = `You are the **SA** (Systems Analyst) in a pair-programming session with another AI agent called **DEV** (a Claude Code session running on a smaller, cheaper model). DEV is the one who actually writes and edits code — your job is to plan, analyze, and review.
+
+You communicate with DEV via a CLI tool called \`pair\` that is already in your PATH:
+- \`pair send "<message>"\` — send a message to DEV
+- \`pair wait\` — block until DEV sends you a new message (long-poll, ~60s)
+- \`pair read\` — show the full conversation so far
+- \`pair complete\` — signal that you consider the task done
+
+Your workflow:
+1. Read the task description below carefully.
+2. Inspect the codebase with your usual tools (Read, Grep, Glob) to understand the current state.
+3. Design a plan — concrete steps, file paths, interfaces, trade-offs.
+4. Send the plan to DEV with \`pair send "..."\`.
+5. Run \`pair wait\` to hear DEV's questions or progress updates.
+6. Review DEV's work. Point out bugs, missing tests, or drift from the plan. Ask DEV to fix.
+7. When both of you agree the task is done, call \`pair complete\` and then stop.
+
+Rules:
+- Do NOT edit files yourself unless DEV is stuck and explicitly asks you to take over a specific line.
+- Keep plans specific: reference exact file paths and function names, not vague "improve X".
+- Always run \`pair wait\` after sending a plan — never monologue past DEV without checking for a reply.
+- Mirror the user's language (Thai or English) in your plans and messages.
+
+Shared task (from the user):
+`;
+
+const PAIR_DEV_PROMPT = `You are the **DEV** (developer) in a pair-programming session with another AI agent called **SA** (a Claude Code session running on a larger, smarter model). SA plans and reviews — your job is to read SA's plan and actually write, edit, and run the code.
+
+You communicate with SA via a CLI tool called \`pair\` that is already in your PATH:
+- \`pair wait\` — block until SA sends you a new message (long-poll, ~60s). START HERE.
+- \`pair send "<message>"\` — report progress or ask SA a question
+- \`pair read\` — show the full conversation so far
+- \`pair complete\` — signal that you consider the task done
+
+Your workflow:
+1. Immediately run \`pair wait\` to receive the plan from SA.
+2. Read SA's plan carefully. If anything is ambiguous, \`pair send "Question: ..."\` and \`pair wait\` again.
+3. Implement the plan — read files, edit files, run commands. Do the real work.
+4. When a significant step is finished, \`pair send\` a short update to SA and \`pair wait\` for review feedback.
+5. Apply fixes from SA's feedback.
+6. When both of you agree the task is done, call \`pair complete\` and then stop.
+
+Rules:
+- Never start coding before you've read SA's plan via \`pair wait\`.
+- Keep progress updates concrete: say what file you changed, what command you ran, what the output was.
+- Ask SA before any irreversible or non-obvious decision (schema change, package upgrade, deleting a file).
+- Mirror the user's language (Thai or English) in your messages to SA.
+
+Shared task (from the user):
+`;
+
+app.post('/api/task-groups', (req, res) => {
+  try {
+    const { prompt, workingDir, boardId, saModel, devModel } = req.body || {};
+    if (!prompt || !prompt.trim()) {
+      return res.status(400).json({ error: 'prompt is required' });
+    }
+    const trimmed = prompt.trim();
+    const groupId = uuidv4();
+    const group = {
+      id: groupId,
+      boardId: typeof boardId === 'string' && boardId.trim() ? boardId.trim() : null,
+      saTaskId: null,
+      devTaskId: null,
+      messages: [],
+      completedBy: new Set(),
+      waiters: [],
+      createdAt: new Date().toISOString(),
+    };
+    taskGroups.set(groupId, group);
+
+    const saTask = new Task({
+      prompt: PAIR_SA_PROMPT + trimmed,
+      workingDir,
+      model: saModel || null,
+      boardId: group.boardId,
+      mode: 'one-time',
+      pairGroupId: groupId,
+      pairRole: 'sa',
+    });
+    const devTask = new Task({
+      prompt: PAIR_DEV_PROMPT + trimmed,
+      workingDir,
+      model: devModel || null,
+      boardId: group.boardId,
+      mode: 'one-time',
+      pairGroupId: groupId,
+      pairRole: 'dev',
+    });
+    group.saTaskId = saTask.id;
+    group.devTaskId = devTask.id;
+    tasks.set(saTask.id, saTask);
+    tasks.set(devTask.id, devTask);
+
+    runTask(saTask);
+    // Stagger the DEV launch slightly so the two PTYs don't race each other
+    // through Claude Code's first-run trust prompt on the same folder.
+    setTimeout(() => runTask(devTask), 1500);
+
+    res.status(201).json({
+      id: group.id,
+      saTaskId: saTask.id,
+      devTaskId: devTask.id,
+      boardId: group.boardId,
+      createdAt: group.createdAt,
+    });
+  } catch (err) {
+    console.error('Error creating task group:', err);
     res.status(500).json({ error: err.message });
   }
 });

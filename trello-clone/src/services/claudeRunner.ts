@@ -37,6 +37,8 @@ export interface RunnerTask {
   exitCode: number | null;
   awaitingSituation?: string | null;
   awaitingQuestion?: string | null;
+  pairGroupId?: string | null;
+  pairRole?: 'sa' | 'dev' | null;
 }
 
 export interface RunnerTaskStatus {
@@ -56,6 +58,8 @@ export interface RunnerTaskSummary {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  pairGroupId?: string | null;
+  pairRole?: 'sa' | 'dev' | null;
 }
 
 // ─── REST API ────────────────────────────────────────────────
@@ -89,6 +93,48 @@ export async function createRunnerTask(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Failed to create runner task: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+// ─── Pair programming (task groups) ────────────────────────────
+
+export interface RunnerTaskGroup {
+  id: string;
+  saTaskId: string;
+  devTaskId: string;
+  boardId: string | null;
+  createdAt: string;
+}
+
+export interface PairMessage {
+  seq: number;
+  from: 'sa' | 'dev' | string;
+  content: string;
+  timestamp: string;
+}
+
+export async function createRunnerTaskGroup(
+  prompt: string,
+  opts: { workingDir?: string; boardId?: string; saModel?: string; devModel?: string } = {}
+): Promise<RunnerTaskGroup> {
+  const res = await fetch(`${RUNNER_BASE}/api/task-groups`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt,
+      workingDir: opts.workingDir,
+      boardId: opts.boardId,
+      saModel: opts.saModel,
+      devModel: opts.devModel,
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to create task group: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export async function getRunnerTaskGroup(id: string): Promise<RunnerTaskGroup & { messages: PairMessage[]; completedBy: string[] }> {
+  const res = await fetch(`${RUNNER_BASE}/api/task-groups/${id}`, { headers: getHeaders() });
+  if (!res.ok) throw new Error(`Failed to get task group: ${res.status}`);
   return res.json();
 }
 
@@ -268,6 +314,35 @@ export async function fsMkdir(targetPath: string): Promise<{ path: string; creat
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `mkdir failed: ${res.status}`);
+  return data;
+}
+
+// ─── Open project folder in external editor / terminal ─────────
+
+export interface OpenTarget {
+  id: string;
+  label: string;
+  kind: 'browser' | 'editor' | 'terminal';
+}
+
+export async function listOpenTargets(): Promise<OpenTarget[]> {
+  const res = await fetch(`${RUNNER_BASE}/api/open/targets`, { headers: getHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `list targets failed: ${res.status}`);
+  return data.targets || [];
+}
+
+export async function openProjectIn(
+  tool: string,
+  targetPath: string
+): Promise<{ path: string; strategy: string; label: string }> {
+  const res = await fetch(`${RUNNER_BASE}/api/open`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool, path: targetPath }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `open failed: ${res.status}`);
   return data;
 }
 

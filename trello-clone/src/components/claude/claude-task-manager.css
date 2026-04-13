@@ -202,6 +202,98 @@
   justify-content: flex-end;
 }
 
+/* Pair programming — checkbox + SA/DEV model selectors */
+.ctm-pair-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(195, 119, 224, 0.08);
+  border: 1px solid rgba(195, 119, 224, 0.35);
+  border-radius: 6px;
+  color: #e0e0ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.ctm-pair-toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: #C377E0;
+  cursor: pointer;
+}
+
+.ctm-pair-toggle-label {
+  flex: 1;
+}
+
+.ctm-pair-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: rgba(195, 119, 224, 0.04);
+  border: 1px dashed rgba(195, 119, 224, 0.25);
+  border-radius: 6px;
+}
+
+.ctm-pair-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ctm-pair-role-label {
+  flex-shrink: 0;
+  width: 86px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #bb88dd;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.ctm-pair-hint {
+  margin: 2px 0 0;
+  font-size: 10px;
+  color: #8b949e;
+  line-height: 1.4;
+}
+
+.ctm-pair-hint code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: 'Menlo', 'Monaco', monospace;
+  color: #C377E0;
+}
+
+.ctm-pair-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  margin-left: 6px;
+}
+
+.ctm-pair-badge--sa {
+  background: rgba(195, 119, 224, 0.2);
+  color: #bb88dd;
+  border: 1px solid rgba(195, 119, 224, 0.4);
+}
+
+.ctm-pair-badge--dev {
+  background: rgba(121, 192, 255, 0.2);
+  color: #79c0ff;
+  border: 1px solid rgba(121, 192, 255, 0.4);
+}
+
 /* ─── Task List ─────────────────────────────────────────── */
 .ctm-task-list {
   flex: 1;
