@@ -1,0 +1,2208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Assistant</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --surface-hover: #242424;
+      --border: #2a2a2a;
+      --text: #e4e4e4;
+      --text-muted: #888;
+      --accent: #6c5ce7;
+      --accent-light: #a29bfe;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --blue: #74b9ff;
+      --red: #ff7675;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-light));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .header h1 span {
+      color: var(--text-muted);
+      font-weight: 400;
+      font-size: 13px;
+      margin-left: 8px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: var(--surface-hover);
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .status-dot.offline { background: var(--red); }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      background: var(--surface);
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tab {
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .tab:hover { color: var(--text); }
+
+    .tab.active {
+      color: var(--accent-light);
+      border-bottom-color: var(--accent);
+    }
+
+    /* Tab Content */
+    .tab-content { display: none; flex: 1; overflow: hidden; }
+    .tab-content.active { display: flex; }
+
+    /* Main Layout */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* === CHAT TAB === */
+    .chat-layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      width: 280px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-section h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .tool-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--surface-hover);
+      border-radius: 8px;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .tool-icon {
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; flex-shrink: 0;
+    }
+
+    .tool-icon.stock { background: rgba(0,184,148,0.15); }
+    .tool-icon.calendar { background: rgba(116,185,255,0.15); }
+    .tool-icon.location { background: rgba(253,203,110,0.15); }
+    .tool-icon.notification { background: rgba(108,92,231,0.15); }
+    .tool-name { font-weight: 500; }
+
+    .rag-stats { display: flex; gap: 8px; }
+
+    .stat-card {
+      flex: 1; padding: 12px;
+      background: var(--surface-hover);
+      border-radius: 8px; text-align: center;
+    }
+
+    .stat-card .number { font-size: 20px; font-weight: 700; color: var(--accent-light); }
+    .stat-card .label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    .upload-area {
+      padding: 12px; border: 2px dashed var(--border);
+      border-radius: 8px; text-align: center;
+      cursor: pointer; transition: border-color 0.2s; margin-top: 8px;
+    }
+
+    .upload-area:hover { border-color: var(--accent); }
+    .upload-area p { font-size: 12px; color: var(--text-muted); }
+
+    .upload-form { margin-top: 8px; display: none; }
+    .upload-form.active { display: block; }
+
+    .upload-form textarea {
+      width: 100%; height: 80px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text);
+      padding: 8px; font-size: 12px; resize: none; font-family: inherit;
+    }
+
+    .upload-form textarea:focus { outline: none; border-color: var(--accent); }
+
+    .btn-small {
+      padding: 6px 12px; background: var(--accent); color: white;
+      border: none; border-radius: 6px; font-size: 12px; cursor: pointer; margin-top: 6px;
+    }
+
+    .btn-small:hover { opacity: 0.9; }
+
+    .chat-area {
+      flex: 1; display: flex; flex-direction: column; overflow: hidden;
+    }
+
+    .messages {
+      flex: 1; overflow-y: auto; padding: 24px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+
+    .messages::-webkit-scrollbar { width: 6px; }
+    .messages::-webkit-scrollbar-track { background: transparent; }
+    .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .message {
+      display: flex; gap: 12px; max-width: 780px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.user { align-self: flex-end; flex-direction: row-reverse; }
+
+    .avatar {
+      width: 32px; height: 32px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; flex-shrink: 0;
+    }
+
+    .message.assistant .avatar { background: linear-gradient(135deg, var(--accent), var(--accent-light)); }
+    .message.user .avatar { background: var(--surface-hover); }
+
+    .bubble {
+      padding: 12px 16px; border-radius: 12px;
+      font-size: 14px; line-height: 1.6;
+    }
+
+    .message.assistant .bubble { background: var(--surface); border: 1px solid var(--border); }
+    .message.user .bubble { background: var(--accent); color: white; }
+
+    .route-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; margin-bottom: 8px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+
+    .route-badge.chat { background: rgba(108,92,231,0.15); color: var(--accent-light); }
+    .route-badge.rag { background: rgba(0,184,148,0.15); color: var(--green); }
+    .route-badge.mcp { background: rgba(253,203,110,0.15); color: var(--orange); }
+
+    .bubble p { margin-bottom: 8px; }
+    .bubble p:last-child { margin-bottom: 0; }
+    .bubble ul, .bubble ol { padding-left: 20px; margin-bottom: 8px; }
+    .bubble li { margin-bottom: 4px; }
+    .bubble strong { color: var(--accent-light); }
+    .bubble code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+
+    .welcome {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center; padding: 40px;
+    }
+
+    .welcome-icon {
+      width: 64px; height: 64px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-light));
+      border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px; margin-bottom: 20px;
+    }
+
+    .welcome h2 { font-size: 22px; margin-bottom: 8px; }
+
+    .welcome p {
+      color: var(--text-muted); font-size: 14px;
+      max-width: 400px; line-height: 1.5; margin-bottom: 24px;
+    }
+
+    .quick-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+    .quick-btn {
+      padding: 10px 16px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.2s;
+    }
+
+    .quick-btn:hover { border-color: var(--accent); background: var(--surface-hover); }
+
+    .typing { display: flex; gap: 4px; padding: 8px 0; }
+
+    .typing span {
+      width: 6px; height: 6px; background: var(--text-muted);
+      border-radius: 50%; animation: bounce 1.4s infinite ease-in-out;
+    }
+
+    .typing span:nth-child(1) { animation-delay: 0s; }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-8px); }
+    }
+
+    .input-area {
+      padding: 16px 24px; background: var(--surface);
+      border-top: 1px solid var(--border);
+    }
+
+    .input-wrapper {
+      display: flex; align-items: flex-end; gap: 12px;
+      max-width: 780px; margin: 0 auto;
+    }
+
+    .input-box { flex: 1; }
+
+    #messageInput {
+      width: 100%; padding: 14px 16px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text);
+      font-size: 14px; font-family: inherit;
+      resize: none; min-height: 48px; max-height: 150px; line-height: 1.4;
+    }
+
+    #messageInput:focus { outline: none; border-color: var(--accent); }
+    #messageInput::placeholder { color: var(--text-muted); }
+
+    .send-btn {
+      width: 48px; height: 48px; background: var(--accent);
+      border: none; border-radius: 12px; color: white;
+      font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: opacity 0.2s; flex-shrink: 0;
+    }
+
+    .send-btn:hover { opacity: 0.9; }
+    .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* === VECTORS TAB === */
+    .vectors-layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .vectors-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .vector-graph-container {
+      flex: 1;
+      position: relative;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    #vectorCanvas {
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    .graph-legend {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      background: rgba(26,26,26,0.9);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 12px;
+    }
+
+    .graph-legend h4 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .graph-info {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: rgba(26,26,26,0.9);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Tooltip */
+    .tooltip {
+      position: absolute;
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      max-width: 300px;
+      pointer-events: none;
+      z-index: 100;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+
+    .tooltip .tt-id {
+      font-weight: 600;
+      color: var(--accent-light);
+      margin-bottom: 4px;
+    }
+
+    .tooltip .tt-content {
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* Search Panel */
+    .search-panel {
+      width: 400px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .search-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .search-header h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .search-input-wrap {
+      display: flex;
+      gap: 8px;
+    }
+
+    #vectorSearchInput {
+      flex: 1;
+      padding: 10px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    #vectorSearchInput:focus { outline: none; border-color: var(--accent); }
+    #vectorSearchInput::placeholder { color: var(--text-muted); }
+
+    .search-btn {
+      padding: 10px 16px;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .search-btn:hover { opacity: 0.9; }
+    .search-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .search-results {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+    }
+
+    .search-results::-webkit-scrollbar { width: 6px; }
+    .search-results::-webkit-scrollbar-track { background: transparent; }
+    .search-results::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .result-card {
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 10px;
+      transition: border-color 0.2s;
+    }
+
+    .result-card:hover { border-color: var(--accent); }
+
+    .result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .result-id {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-light);
+    }
+
+    .result-score {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .score-bar-bg {
+      width: 80px;
+      height: 6px;
+      background: var(--bg);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .score-bar {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.5s ease;
+    }
+
+    .score-percent {
+      font-size: 14px;
+      font-weight: 700;
+      min-width: 42px;
+      text-align: right;
+    }
+
+    .result-content {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .no-results {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 40px;
+    }
+
+    .no-results .nr-icon {
+      font-size: 36px;
+      margin-bottom: 12px;
+      opacity: 0.3;
+    }
+
+    .search-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+    }
+
+    /* === PROCESS TAB === */
+    .process-layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .process-input-panel {
+      width: 480px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .process-section {
+      padding: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .process-section h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .process-text-input {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+      margin-bottom: 10px;
+    }
+
+    .process-text-input:focus { outline: none; border-color: var(--accent); }
+    .process-text-input::placeholder { color: var(--text-muted); }
+
+    .process-textarea {
+      width: 100%;
+      height: 200px;
+      padding: 12px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+      line-height: 1.6;
+    }
+
+    .process-textarea:focus { outline: none; border-color: var(--accent); }
+    .process-textarea::placeholder { color: var(--text-muted); }
+
+    .process-stats {
+      display: flex;
+      gap: 16px;
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .process-options {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .process-radio {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+
+    .process-radio:hover { border-color: var(--accent); }
+
+    .process-radio input[type="radio"] { accent-color: var(--accent); }
+
+    .radio-label {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .radio-desc {
+      width: 100%;
+      font-size: 11px;
+      color: var(--text-muted);
+      padding-left: 24px;
+    }
+
+    .chunk-size-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .chunk-size-row input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+    }
+
+    #chunkSizeLabel {
+      font-weight: 700;
+      color: var(--accent-light);
+      min-width: 30px;
+    }
+
+    .process-actions {
+      padding: 16px 20px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .process-btn {
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+    }
+
+    .process-btn.secondary {
+      background: var(--surface-hover);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .process-btn.secondary:hover { background: var(--border); }
+
+    .process-btn.primary {
+      background: var(--green);
+      color: white;
+    }
+
+    .process-btn.primary:hover { opacity: 0.9; }
+
+    .process-btn.accent {
+      background: var(--accent);
+      color: white;
+    }
+
+    .process-btn.accent:hover { opacity: 0.9; }
+
+    .process-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Process Results */
+    .process-result-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .process-result-tabs {
+      display: flex;
+      padding: 0 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .pr-tab {
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border: none;
+      background: none;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .pr-tab:hover { color: var(--text); }
+    .pr-tab.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+
+    .process-result-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .process-result-content::-webkit-scrollbar { width: 6px; }
+    .process-result-content::-webkit-scrollbar-track { background: transparent; }
+    .process-result-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .pr-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 40px;
+    }
+
+    .pr-empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.3; }
+
+    .chunk-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+
+    .chunk-card:hover { border-color: var(--accent); }
+
+    .chunk-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .chunk-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent-light);
+    }
+
+    .chunk-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .chunk-text {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    .chunk-stored {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: rgba(0,184,148,0.15);
+      color: var(--green);
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .chunk-preview {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: rgba(116,185,255,0.15);
+      color: var(--blue);
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .qa-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+
+    .qa-card:hover { border-color: var(--accent); }
+
+    .qa-question {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--orange);
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    .qa-question::before {
+      content: 'Q: ';
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .qa-answer {
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.6;
+      padding-left: 20px;
+      border-left: 3px solid var(--accent);
+    }
+
+    .qa-answer::before {
+      content: 'A: ';
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .process-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      gap: 12px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .process-summary {
+      padding: 12px 16px;
+      background: rgba(0,184,148,0.1);
+      border: 1px solid rgba(0,184,148,0.2);
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: var(--green);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Model Selector */
+    .model-selector-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 24px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      overflow-x: auto;
+    }
+
+    .model-selector-bar::-webkit-scrollbar { height: 0; }
+
+    .model-selector-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      margin-right: 4px;
+    }
+
+    .model-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+
+    .model-chip:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .model-chip.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    .model-chip .chip-icon { font-size: 13px; }
+
+    .model-chip .chip-speed {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 8px;
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .model-chip.active .chip-speed {
+      background: rgba(255,255,255,0.2);
+    }
+
+    .chip-speed.fast { background: rgba(0,184,148,0.15); color: var(--green); }
+    .chip-speed.medium { background: rgba(116,185,255,0.15); color: var(--blue); }
+    .chip-speed.slow { background: rgba(253,203,110,0.15); color: var(--orange); }
+
+    .model-chip.active .chip-speed.fast,
+    .model-chip.active .chip-speed.medium,
+    .model-chip.active .chip-speed.slow {
+      background: rgba(255,255,255,0.2);
+      color: white;
+    }
+
+    .model-chip-tooltip {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      display: none;
+      z-index: 50;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      pointer-events: none;
+    }
+
+    .model-chip-wrap {
+      position: relative;
+    }
+
+    .model-chip-wrap:hover .model-chip-tooltip {
+      display: block;
+    }
+
+    /* Document Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .modal-overlay.active { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      width: 680px;
+      max-width: 90vw;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      animation: modalIn 0.25s ease;
+    }
+
+    @keyframes modalIn {
+      from { opacity: 0; transform: translateY(20px) scale(0.97); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .modal-header h3 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .modal-badge {
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .modal-close {
+      width: 32px; height: 32px;
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-muted);
+      font-size: 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+
+    .modal-close:hover {
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .modal-meta {
+      padding: 12px 24px;
+      background: var(--bg);
+      display: flex;
+      gap: 24px;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .modal-meta-item strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .modal-body {
+      padding: 24px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .modal-body::-webkit-scrollbar { width: 6px; }
+    .modal-body::-webkit-scrollbar-track { background: transparent; }
+    .modal-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .modal-content-text {
+      font-size: 14px;
+      line-height: 1.8;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .modal-footer {
+      padding: 14px 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .modal-btn {
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--surface-hover);
+      color: var(--text);
+      transition: all 0.15s;
+    }
+
+    .modal-btn:hover { background: var(--border); }
+
+    .modal-btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    .modal-btn.primary:hover { opacity: 0.9; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .search-panel { width: 100%; }
+      .vectors-layout { flex-direction: column; }
+      .vector-graph-container { min-height: 300px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">AI</div>
+      <h1>AI Assistant <span>Agentic Orchestrator</span></h1>
+    </div>
+    <div class="header-right">
+      <div class="status-badge" id="statusBadge">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Connecting...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" data-tab="chat" onclick="switchTab('chat')">Chat</div>
+    <div class="tab" data-tab="process" onclick="switchTab('process')">Process</div>
+    <div class="tab" data-tab="vectors" onclick="switchTab('vectors')">Vectors</div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Chat Tab -->
+    <div class="tab-content active" id="tab-chat">
+      <div class="chat-layout">
+        <div class="sidebar">
+          <div class="sidebar-section">
+            <h3>MCP Tools</h3>
+            <div id="toolsList"></div>
+          </div>
+          <div class="sidebar-section">
+            <h3>Knowledge Base (RAG)</h3>
+            <div class="rag-stats">
+              <div class="stat-card">
+                <div class="number" id="docCount">0</div>
+                <div class="label">Documents</div>
+              </div>
+              <div class="stat-card">
+                <div class="number" id="queryCount">0</div>
+                <div class="label">Queries</div>
+              </div>
+            </div>
+            <div class="upload-area" id="uploadToggle">
+              <p>+ Add Knowledge Document</p>
+            </div>
+            <div class="upload-form" id="uploadForm">
+              <textarea id="docContent" placeholder="Paste document content here..."></textarea>
+              <button class="btn-small" onclick="uploadDocument()">Add Document</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-area">
+          <div class="messages" id="messages">
+            <div class="welcome" id="welcome">
+              <div class="welcome-icon">AI</div>
+              <h2>AI Agentic Orchestrator</h2>
+              <p>I can chat with you, search your knowledge base, or execute actions via MCP tools.</p>
+              <div class="quick-actions">
+                <button class="quick-btn" onclick="sendQuick('Hello, what can you do?')">What can you do?</button>
+                <button class="quick-btn" onclick="sendQuick('Check stock levels in warehouse')">Check Stock</button>
+                <button class="quick-btn" onclick="sendQuick('Show my schedule for today')">My Schedule</button>
+                <button class="quick-btn" onclick="sendQuick('Find location of Bangkok')">Find Location</button>
+              </div>
+            </div>
+          </div>
+          <div class="model-selector-bar" id="modelSelectorBar">
+            <span class="model-selector-label">Model:</span>
+            <div id="modelChips">
+              <span class="model-chip active" style="opacity:0.5;">Loading models...</span>
+            </div>
+          </div>
+          <div class="input-area">
+            <div class="input-wrapper">
+              <div class="input-box">
+                <textarea id="messageInput" placeholder="Type your message..." rows="1" onkeydown="handleKey(event)"></textarea>
+              </div>
+              <button class="send-btn" id="sendBtn" onclick="sendMessage()">&#8593;</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Process Tab -->
+    <div class="tab-content" id="tab-process">
+      <div class="process-layout">
+        <!-- Left: Input -->
+        <div class="process-input-panel">
+          <div class="process-section">
+            <h3>Document Input</h3>
+            <input type="text" id="processDocId" placeholder="Document ID (e.g. company-policy)" class="process-text-input">
+            <textarea id="processDocContent" placeholder="Paste your document content here...&#10;&#10;The system will split it into sentences/chunks and optionally generate Q&A pairs using AI." class="process-textarea"></textarea>
+            <div class="process-stats" id="processStats">
+              <span>0 characters</span>
+              <span>0 words</span>
+              <span>0 sentences</span>
+            </div>
+          </div>
+
+          <div class="process-section">
+            <h3>Split Settings</h3>
+            <div class="process-options">
+              <label class="process-radio">
+                <input type="radio" name="splitMode" value="chunk" checked>
+                <span class="radio-label">Smart Chunks</span>
+                <span class="radio-desc">Group sentences into chunks with overlap for context</span>
+              </label>
+              <label class="process-radio">
+                <input type="radio" name="splitMode" value="sentence">
+                <span class="radio-label">Individual Sentences</span>
+                <span class="radio-desc">Each sentence becomes a separate vector entry</span>
+              </label>
+            </div>
+            <div class="chunk-size-row" id="chunkSizeRow">
+              <label>Chunk size (chars):</label>
+              <input type="range" id="chunkSizeSlider" min="100" max="500" value="200" oninput="updateChunkLabel()">
+              <span id="chunkSizeLabel">200</span>
+            </div>
+          </div>
+
+          <div class="process-actions">
+            <button class="process-btn secondary" onclick="previewSplit()">Preview Split</button>
+            <button class="process-btn primary" onclick="executeSplit()">Split & Store Vectors</button>
+            <button class="process-btn accent" onclick="executeQA()">AI Generate Q&A</button>
+          </div>
+        </div>
+
+        <!-- Right: Results -->
+        <div class="process-result-panel">
+          <div class="process-result-tabs">
+            <button class="pr-tab active" onclick="switchProcessResult('chunks')" data-prtab="chunks">Chunks</button>
+            <button class="pr-tab" onclick="switchProcessResult('qa')" data-prtab="qa">Q&A Pairs</button>
+          </div>
+
+          <div class="process-result-content" id="prChunks">
+            <div class="pr-empty">
+              <div class="pr-empty-icon">&#x2702;</div>
+              <p>Preview or split a document to see chunks here</p>
+            </div>
+          </div>
+
+          <div class="process-result-content" id="prQA" style="display:none;">
+            <div class="pr-empty">
+              <div class="pr-empty-icon">&#x1f4ac;</div>
+              <p>Click "AI Generate Q&A" to create question-answer pairs from your document</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vectors Tab -->
+    <div class="tab-content" id="tab-vectors">
+      <div class="vectors-layout">
+        <div class="vectors-panel">
+          <div class="vector-graph-container">
+            <canvas id="vectorCanvas"></canvas>
+            <div class="graph-legend">
+              <h4>Vector Space (PCA 2D)</h4>
+              <div class="legend-item">
+                <div class="legend-dot" style="background: var(--accent-light);"></div>
+                <span>Document</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-dot" style="background: var(--orange);"></div>
+                <span>Search Query</span>
+              </div>
+              <div class="legend-item">
+                <div class="legend-dot" style="background: rgba(0,184,148,0.4);"></div>
+                <span>Similarity Radius</span>
+              </div>
+            </div>
+            <div class="graph-info" id="graphInfo">Hover over points for details</div>
+            <div class="tooltip" id="tooltip">
+              <div class="tt-id"></div>
+              <div class="tt-content"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="search-panel">
+          <div class="search-header">
+            <h3>Vector Similarity Search</h3>
+            <div class="search-input-wrap">
+              <input type="text" id="vectorSearchInput" placeholder="Search your knowledge base..." onkeydown="if(event.key==='Enter')vectorSearch()">
+              <button class="search-btn" id="searchBtn" onclick="vectorSearch()">Search</button>
+            </div>
+          </div>
+          <div class="search-results" id="searchResults">
+            <div class="no-results">
+              <div class="nr-icon">&#x1f50d;</div>
+              <p>Enter a query to search the vector database.<br>Results will show cosine similarity scores.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Document Modal -->
+  <div class="modal-overlay" id="docModal" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-header-left">
+          <h3 id="modalTitle">Document</h3>
+          <span class="modal-badge" id="modalBadge" style="background:rgba(108,92,231,0.15);color:var(--accent-light);"></span>
+        </div>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-meta" id="modalMeta"></div>
+      <div class="modal-body">
+        <div class="modal-content-text" id="modalText"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn" onclick="copyModalText()">Copy Text</button>
+        <button class="modal-btn primary" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Base prefix under which this app is mounted on the merged gateway.
+    // Auto-detect: if the page is served from /assistant/ use that, otherwise root.
+    const API = window.location.pathname.startsWith('/assistant') ? '/assistant' : '';
+    let queryCount = 0;
+    let chatHistory = [];
+    let selectedModel = null; // null = use server default
+    let availableModels = [];
+
+    // Document modal state
+    let allDocsCache = {};
+
+    // Vector graph state
+    let vectorDocs = [];
+    let searchQueryPoint = null;
+    let searchResultIds = [];
+    let hoveredPoint = null;
+
+    const toolIcons = {
+      get_stock: { icon: '&#x1f4e6;', cls: 'stock' },
+      get_calendar: { icon: '&#x1f4c5;', cls: 'calendar' },
+      get_location: { icon: '&#x1f4cd;', cls: 'location' },
+      send_notification: { icon: '&#x1f514;', cls: 'notification' },
+    };
+
+    // === TABS ===
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+      document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
+      document.getElementById(`tab-${tabName}`).classList.add('active');
+
+      if (tabName === 'vectors') loadVectorGraph();
+    }
+
+    // === INIT ===
+    async function init() {
+      try {
+        const health = await fetch(`${API}/api/health`).then(r => r.json());
+        document.getElementById('statusDot').classList.remove('offline');
+        document.getElementById('statusText').textContent = `Online - ${health.mcpTools.length} tools`;
+        document.getElementById('docCount').textContent = health.documentsInRAG;
+
+        const toolsHtml = health.mcpTools.map(name => {
+          const t = toolIcons[name] || { icon: '&#x2699;', cls: 'stock' };
+          return `<div class="tool-card">
+            <div class="tool-icon ${t.cls}">${t.icon}</div>
+            <span class="tool-name">${name}</span>
+          </div>`;
+        }).join('');
+        document.getElementById('toolsList').innerHTML = toolsHtml;
+
+        // Load models
+        await loadModels();
+      } catch {
+        document.getElementById('statusDot').classList.add('offline');
+        document.getElementById('statusText').textContent = 'Offline';
+      }
+    }
+
+    async function loadModels() {
+      try {
+        const res = await fetch(`${API}/api/models`).then(r => r.json());
+        availableModels = res.models || [];
+        const defaultModel = res.default;
+
+        // Set default selection
+        selectedModel = defaultModel;
+
+        // Render chips
+        const chipsContainer = document.getElementById('modelChips');
+        chipsContainer.innerHTML = availableModels.map(m => `
+          <div class="model-chip-wrap">
+            <div class="model-chip ${m.id === selectedModel ? 'active' : ''}"
+                 onclick="selectModel('${m.id}')" data-model="${m.id}">
+              <span class="chip-icon">${m.icon}</span>
+              <span>${m.label}</span>
+              <span class="chip-speed ${m.speed}">${m.speed}</span>
+            </div>
+            <div class="model-chip-tooltip">${m.description}</div>
+          </div>
+        `).join('');
+      } catch (err) {
+        console.error('Failed to load models:', err);
+        document.getElementById('modelChips').innerHTML = '<span class="model-chip active">Default</span>';
+      }
+    }
+
+    function selectModel(modelId) {
+      selectedModel = modelId;
+      document.querySelectorAll('.model-chip').forEach(chip => {
+        chip.classList.toggle('active', chip.dataset.model === modelId);
+      });
+    }
+
+    // === UPLOAD ===
+    document.getElementById('uploadToggle').addEventListener('click', () => {
+      document.getElementById('uploadForm').classList.toggle('active');
+    });
+
+    async function uploadDocument() {
+      const content = document.getElementById('docContent').value.trim();
+      if (!content) return;
+      const id = `doc_${Date.now()}`;
+      try {
+        const res = await fetch(`${API}/api/documents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, content }),
+        }).then(r => r.json());
+        if (res.success) {
+          document.getElementById('docCount').textContent = res.totalDocuments;
+          document.getElementById('docContent').value = '';
+          document.getElementById('uploadForm').classList.remove('active');
+        }
+      } catch (err) { console.error('Upload failed:', err); }
+    }
+
+    // === CHAT ===
+    function handleKey(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+      const el = e.target;
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+    }
+
+    function sendQuick(msg) {
+      document.getElementById('messageInput').value = msg;
+      sendMessage();
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const msg = input.value.trim();
+      if (!msg) return;
+      const welcome = document.getElementById('welcome');
+      if (welcome) welcome.remove();
+      addMessage('user', msg);
+      input.value = '';
+      input.style.height = 'auto';
+      const typingId = showTyping();
+      document.getElementById('sendBtn').disabled = true;
+      try {
+        const res = await fetch(`${API}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg, history: chatHistory.slice(-10), model: selectedModel }),
+        }).then(r => r.json());
+        removeTyping(typingId);
+        if (res.success) {
+          addMessage('assistant', res.response, res.path, res.classification, res.model);
+          chatHistory.push({ role: 'user', content: msg });
+          chatHistory.push({ role: 'assistant', content: res.response });
+          queryCount++;
+          document.getElementById('queryCount').textContent = queryCount;
+        } else {
+          addMessage('assistant', `Error: ${res.error}`, 'error');
+        }
+      } catch (err) {
+        removeTyping(typingId);
+        addMessage('assistant', `Connection error: ${err.message}`, 'error');
+      }
+      document.getElementById('sendBtn').disabled = false;
+      input.focus();
+    }
+
+    function addMessage(role, content, path, classification, modelUsed) {
+      const container = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      const avatar = role === 'assistant' ? 'AI' : '&#x1f464;';
+      const formattedContent = formatContent(content);
+      let badgeHtml = '';
+      if (path && role === 'assistant') {
+        const labels = { chat: 'Chat', rag: 'RAG Search', mcp: 'MCP Tool' };
+        const toolInfo = classification?.tool ? ` - ${classification.tool}` : '';
+        badgeHtml = `<div class="route-badge ${path}">${labels[path] || path}${toolInfo}</div>`;
+        // Model badge
+        if (modelUsed) {
+          const m = availableModels.find(x => x.id === modelUsed);
+          const mLabel = m ? m.label : modelUsed.split(':')[0];
+          badgeHtml += ` <span style="font-size:10px;color:var(--text-muted);margin-left:4px;">${mLabel}</span>`;
+        }
+      }
+      div.innerHTML = `
+        <div class="avatar">${avatar}</div>
+        <div class="bubble">${badgeHtml}${formattedContent}</div>
+      `;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function formatContent(text) {
+      return text
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/`(.*?)`/g, '<code>$1</code>')
+        .replace(/^\* (.+)$/gm, '<li>$1</li>')
+        .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n/g, '<br>')
+        .replace(/^/, '<p>')
+        .replace(/$/, '</p>');
+    }
+
+    function showTyping() {
+      const container = document.getElementById('messages');
+      const div = document.createElement('div');
+      const id = 'typing-' + Date.now();
+      div.id = id;
+      div.className = 'message assistant';
+      div.innerHTML = `<div class="avatar">AI</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+      return id;
+    }
+
+    function removeTyping(id) { const el = document.getElementById(id); if (el) el.remove(); }
+
+    // === VECTOR GRAPH ===
+    async function loadVectorGraph() {
+      try {
+        const res = await fetch(`${API}/api/documents/vectors`).then(r => r.json());
+        vectorDocs = res.documents || [];
+        drawGraph();
+        document.getElementById('graphInfo').textContent = `${vectorDocs.length} documents in vector space`;
+      } catch (err) {
+        console.error('Failed to load vectors:', err);
+      }
+    }
+
+    function drawGraph() {
+      const canvas = document.getElementById('vectorCanvas');
+      const container = canvas.parentElement;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = container.clientWidth * dpr;
+      canvas.height = container.clientHeight * dpr;
+      canvas.style.width = container.clientWidth + 'px';
+      canvas.style.height = container.clientHeight + 'px';
+
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      const pad = 80;
+
+      // Clear
+      ctx.fillStyle = '#0f0f0f';
+      ctx.fillRect(0, 0, w, h);
+
+      if (vectorDocs.length === 0) {
+        ctx.fillStyle = '#888';
+        ctx.font = '14px -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('No documents in vector database', w / 2, h / 2);
+        ctx.fillText('Add documents via Chat tab or API', w / 2, h / 2 + 24);
+        return;
+      }
+
+      // Compute bounds
+      const allPoints = [...vectorDocs];
+      if (searchQueryPoint) allPoints.push(searchQueryPoint);
+
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of allPoints) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+
+      const rangeX = maxX - minX || 1;
+      const rangeY = maxY - minY || 1;
+
+      function toScreen(x, y) {
+        return [
+          pad + ((x - minX) / rangeX) * (w - 2 * pad),
+          pad + ((y - minY) / rangeY) * (h - 2 * pad),
+        ];
+      }
+
+      // Grid
+      ctx.strokeStyle = '#1a1a1a';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const gx = pad + (i / 4) * (w - 2 * pad);
+        const gy = pad + (i / 4) * (h - 2 * pad);
+        ctx.beginPath(); ctx.moveTo(gx, pad); ctx.lineTo(gx, h - pad); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(w - pad, gy); ctx.stroke();
+      }
+
+      // Axes labels
+      ctx.fillStyle = '#555';
+      ctx.font = '11px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('PC1', w / 2, h - pad / 3);
+      ctx.save();
+      ctx.translate(pad / 3, h / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('PC2', 0, 0);
+      ctx.restore();
+
+      // Draw connection lines from search query to results
+      if (searchQueryPoint && searchResultIds.length > 0) {
+        const [qx, qy] = toScreen(searchQueryPoint.x, searchQueryPoint.y);
+        for (const doc of vectorDocs) {
+          if (searchResultIds.includes(doc.id)) {
+            const [dx, dy] = toScreen(doc.x, doc.y);
+            ctx.strokeStyle = 'rgba(0, 184, 148, 0.2)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(qx, qy);
+            ctx.lineTo(dx, dy);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+      }
+
+      // Draw document points
+      // Store screen positions for hover detection
+      canvas._points = [];
+
+      for (const doc of vectorDocs) {
+        const [sx, sy] = toScreen(doc.x, doc.y);
+        const isResult = searchResultIds.includes(doc.id);
+        const isHovered = hoveredPoint && hoveredPoint.id === doc.id;
+        const radius = isHovered ? 10 : (isResult ? 8 : 6);
+
+        // Glow for search results
+        if (isResult) {
+          ctx.beginPath();
+          ctx.arc(sx, sy, 20, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(0, 184, 148, 0.1)';
+          ctx.fill();
+        }
+
+        // Point
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.fillStyle = isResult ? '#00b894' : (isHovered ? '#fff' : '#a29bfe');
+        ctx.fill();
+
+        // Border
+        ctx.strokeStyle = isResult ? '#00b894' : '#6c5ce7';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = isHovered ? '#fff' : '#888';
+        ctx.font = `${isHovered ? '12' : '10'}px -apple-system, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(doc.id, sx, sy - radius - 6);
+
+        canvas._points.push({ ...doc, sx, sy, radius });
+      }
+
+      // Draw search query point
+      if (searchQueryPoint) {
+        const [sx, sy] = toScreen(searchQueryPoint.x, searchQueryPoint.y);
+
+        // Pulse ring
+        ctx.beginPath();
+        ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(253, 203, 110, 0.3)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Diamond shape
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - 9);
+        ctx.lineTo(sx + 9, sy);
+        ctx.lineTo(sx, sy + 9);
+        ctx.lineTo(sx - 9, sy);
+        ctx.closePath();
+        ctx.fillStyle = '#fdcb6e';
+        ctx.fill();
+        ctx.strokeStyle = '#f39c12';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#fdcb6e';
+        ctx.font = '11px -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Query', sx, sy - 16);
+      }
+    }
+
+    // Canvas hover
+    const canvas = document.getElementById('vectorCanvas');
+    const tooltip = document.getElementById('tooltip');
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!canvas._points) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      let found = null;
+      for (const p of canvas._points) {
+        const dx = mx - p.sx;
+        const dy = my - p.sy;
+        if (dx * dx + dy * dy < 400) { found = p; break; }
+      }
+
+      if (found) {
+        hoveredPoint = found;
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX - canvas.parentElement.getBoundingClientRect().left + 15) + 'px';
+        tooltip.style.top = (e.clientY - canvas.parentElement.getBoundingClientRect().top - 10) + 'px';
+        tooltip.querySelector('.tt-id').textContent = found.id;
+        tooltip.querySelector('.tt-content').textContent = found.content.substring(0, 150) + (found.content.length > 150 ? '...' : '');
+        drawGraph();
+      } else if (hoveredPoint) {
+        hoveredPoint = null;
+        tooltip.style.display = 'none';
+        drawGraph();
+      }
+    });
+
+    canvas.addEventListener('click', (e) => {
+      if (!canvas._points) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      for (const p of canvas._points) {
+        const dx = mx - p.sx;
+        const dy = my - p.sy;
+        if (dx * dx + dy * dy < 400) { openDocModal(p.id, p.content, p.created_at); break; }
+      }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      hoveredPoint = null;
+      tooltip.style.display = 'none';
+      drawGraph();
+    });
+
+    // Resize
+    window.addEventListener('resize', () => {
+      if (document.getElementById('tab-vectors').classList.contains('active')) {
+        drawGraph();
+      }
+    });
+
+    // === VECTOR SEARCH ===
+    async function vectorSearch() {
+      const input = document.getElementById('vectorSearchInput');
+      const query = input.value.trim();
+      if (!query) return;
+
+      const resultsContainer = document.getElementById('searchResults');
+      const searchBtn = document.getElementById('searchBtn');
+      searchBtn.disabled = true;
+      resultsContainer.innerHTML = '<div class="search-loading"><div class="typing"><span></span><span></span><span></span></div></div>';
+
+      try {
+        // Get search results
+        const res = await fetch(`${API}/api/documents/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, topK: 10 }),
+        }).then(r => r.json());
+
+        // Get updated graph with query point
+        const vecRes = await fetch(`${API}/api/documents/vectors`).then(r => r.json());
+        vectorDocs = vecRes.documents || [];
+
+        // Place query point (we need the server to give us the projected position)
+        // For now, place it at the centroid of matching docs weighted by score
+        searchResultIds = (res.results || []).map(r => r.id);
+
+        if (searchResultIds.length > 0 && vectorDocs.length > 0) {
+          let qx = 0, qy = 0, totalScore = 0;
+          for (const r of res.results) {
+            const doc = vectorDocs.find(d => d.id === r.id);
+            if (doc) {
+              qx += doc.x * r.score;
+              qy += doc.y * r.score;
+              totalScore += r.score;
+            }
+          }
+          if (totalScore > 0) {
+            // Offset slightly so it doesn't overlap with the top result
+            searchQueryPoint = { x: qx / totalScore + 0.02, y: qy / totalScore + 0.02 };
+          }
+        } else {
+          searchQueryPoint = null;
+        }
+
+        drawGraph();
+
+        // Render results
+        if (!res.results || res.results.length === 0) {
+          resultsContainer.innerHTML = '<div class="no-results"><div class="nr-icon">&#x1f6ab;</div><p>No matching documents found.</p></div>';
+          return;
+        }
+
+        // Cache results for modal
+        for (const r of res.results) {
+          allDocsCache[r.id] = { content: r.content, score: r.matchPercent };
+        }
+
+        resultsContainer.innerHTML = res.results.map(r => {
+          const pct = r.matchPercent;
+          const color = pct >= 70 ? 'var(--green)' : pct >= 50 ? 'var(--orange)' : 'var(--red)';
+          const escaped = r.content.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+          return `
+            <div class="result-card" onclick="openDocModal('${r.id}', null, null, ${pct})" onmouseenter="highlightDoc('${r.id}')" onmouseleave="unhighlightDoc()" style="cursor:pointer;">
+              <div class="result-header">
+                <span class="result-id">${r.id}</span>
+                <div class="result-score">
+                  <div class="score-bar-bg">
+                    <div class="score-bar" style="width: ${pct}%; background: ${color};"></div>
+                  </div>
+                  <span class="score-percent" style="color: ${color};">${pct}%</span>
+                </div>
+              </div>
+              <div class="result-content">${r.content}</div>
+            </div>
+          `;
+        }).join('');
+
+      } catch (err) {
+        resultsContainer.innerHTML = `<div class="no-results"><div class="nr-icon">&#x26a0;</div><p>Search failed: ${err.message}</p></div>`;
+      }
+
+      searchBtn.disabled = false;
+    }
+
+    function highlightDoc(id) {
+      hoveredPoint = vectorDocs.find(d => d.id === id) || null;
+      drawGraph();
+    }
+
+    function unhighlightDoc() {
+      hoveredPoint = null;
+      drawGraph();
+    }
+
+    // === DOCUMENT MODAL ===
+    function openDocModal(id, content, createdAt, matchPercent) {
+      // Try to get content from vectorDocs cache or allDocsCache
+      const vecDoc = vectorDocs.find(d => d.id === id);
+      const fullContent = content || (vecDoc && vecDoc.content) || (allDocsCache[id] && allDocsCache[id].content) || 'Content not available';
+      const date = createdAt || (vecDoc && vecDoc.created_at) || null;
+      const score = matchPercent || (allDocsCache[id] && allDocsCache[id].score) || null;
+
+      // Title
+      document.getElementById('modalTitle').textContent = id;
+
+      // Badge
+      const badge = document.getElementById('modalBadge');
+      if (score !== null) {
+        const color = score >= 70 ? 'var(--green)' : score >= 50 ? 'var(--orange)' : 'var(--red)';
+        badge.textContent = score + '% match';
+        badge.style.background = score >= 70 ? 'rgba(0,184,148,0.15)' : score >= 50 ? 'rgba(253,203,110,0.15)' : 'rgba(255,118,117,0.15)';
+        badge.style.color = color;
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
+
+      // Meta
+      const metaEl = document.getElementById('modalMeta');
+      const charCount = fullContent.length;
+      const wordCount = fullContent.split(/\s+/).filter(Boolean).length;
+      let metaHtml = `
+        <div class="modal-meta-item"><strong>${wordCount}</strong> words</div>
+        <div class="modal-meta-item"><strong>${charCount}</strong> characters</div>
+      `;
+      if (date) {
+        const d = new Date(date);
+        metaHtml += `<div class="modal-meta-item">Added: <strong>${d.toLocaleDateString()} ${d.toLocaleTimeString()}</strong></div>`;
+      }
+      metaEl.innerHTML = metaHtml;
+
+      // Content
+      document.getElementById('modalText').textContent = fullContent;
+
+      // Show
+      document.getElementById('docModal').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('docModal').classList.remove('active');
+    }
+
+    function copyModalText() {
+      const text = document.getElementById('modalText').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = event.target;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Text'; }, 1500);
+      });
+    }
+
+    // Close modal on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal();
+    });
+
+    // === PROCESS TAB ===
+
+    // Live stats for textarea
+    document.getElementById('processDocContent').addEventListener('input', (e) => {
+      const text = e.target.value;
+      const chars = text.length;
+      const words = text.split(/\s+/).filter(Boolean).length;
+      const sentences = text.split(/[.!?\u0E2F\u0E30]\s+/).filter(s => s.trim().length > 0).length;
+      document.getElementById('processStats').innerHTML = `
+        <span>${chars} characters</span>
+        <span>${words} words</span>
+        <span>~${sentences} sentences</span>
+      `;
+    });
+
+    function updateChunkLabel() {
+      document.getElementById('chunkSizeLabel').textContent = document.getElementById('chunkSizeSlider').value;
+    }
+
+    function switchProcessResult(tab) {
+      document.querySelectorAll('.pr-tab').forEach(t => t.classList.remove('active'));
+      document.querySelector(`.pr-tab[data-prtab="${tab}"]`).classList.add('active');
+      document.getElementById('prChunks').style.display = tab === 'chunks' ? 'block' : 'none';
+      document.getElementById('prQA').style.display = tab === 'qa' ? 'block' : 'none';
+    }
+
+    function getProcessInputs() {
+      const id = document.getElementById('processDocId').value.trim();
+      const content = document.getElementById('processDocContent').value.trim();
+      const mode = document.querySelector('input[name="splitMode"]:checked').value;
+      const chunkSize = parseInt(document.getElementById('chunkSizeSlider').value);
+      return { id, content, mode, chunkSize };
+    }
+
+    async function previewSplit() {
+      const { content, mode, chunkSize } = getProcessInputs();
+      if (!content) return alert('Please enter document content');
+
+      const container = document.getElementById('prChunks');
+      container.innerHTML = '<div class="process-loading"><div class="typing"><span></span><span></span><span></span></div>Splitting...</div>';
+      switchProcessResult('chunks');
+
+      try {
+        const res = await fetch(`${API}/api/documents/split/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content, mode, chunkSize }),
+        }).then(r => r.json());
+
+        container.innerHTML = `
+          <div class="process-summary">&#x2702; Preview: ${res.totalParts} ${mode === 'sentence' ? 'sentences' : 'chunks'} (not stored yet)</div>
+          ${res.parts.map(p => `
+            <div class="chunk-card" onclick="openDocModal('Chunk ${p.index}', '${p.content.replace(/'/g, "\\'")}')">
+              <div class="chunk-header">
+                <span class="chunk-label">Chunk ${p.index}</span>
+                <div>
+                  <span class="chunk-meta">${p.length} chars</span>
+                  <span class="chunk-preview" style="margin-left:8px;">Preview</span>
+                </div>
+              </div>
+              <div class="chunk-text">${p.content}</div>
+            </div>
+          `).join('')}
+        `;
+      } catch (err) {
+        container.innerHTML = `<div class="pr-empty"><p>Error: ${err.message}</p></div>`;
+      }
+    }
+
+    async function executeSplit() {
+      const { id, content, mode, chunkSize } = getProcessInputs();
+      if (!id) return alert('Please enter a Document ID');
+      if (!content) return alert('Please enter document content');
+
+      const container = document.getElementById('prChunks');
+      container.innerHTML = '<div class="process-loading"><div class="typing"><span></span><span></span><span></span></div>Splitting & storing vectors...</div>';
+      switchProcessResult('chunks');
+
+      // Disable buttons
+      document.querySelectorAll('.process-btn').forEach(b => b.disabled = true);
+
+      try {
+        const res = await fetch(`${API}/api/documents/split`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, content, mode, chunkSize }),
+        }).then(r => r.json());
+
+        if (!res.success) throw new Error(res.error);
+
+        // Update doc count
+        document.getElementById('docCount').textContent = res.totalDocuments;
+
+        container.innerHTML = `
+          <div class="process-summary">&#x2705; Stored ${res.totalChunks} chunks as vectors (parent: ${res.parentId})</div>
+          ${res.chunks.map((c, i) => `
+            <div class="chunk-card" onclick="openDocModal('${c.id}', null)">
+              <div class="chunk-header">
+                <span class="chunk-label">${c.id}</span>
+                <div>
+                  <span class="chunk-meta">${c.content.length} chars</span>
+                  <span class="chunk-stored" style="margin-left:8px;">Stored</span>
+                </div>
+              </div>
+              <div class="chunk-text">${c.content}</div>
+            </div>
+          `).join('')}
+        `;
+      } catch (err) {
+        container.innerHTML = `<div class="pr-empty"><p>Error: ${err.message}</p></div>`;
+      }
+
+      document.querySelectorAll('.process-btn').forEach(b => b.disabled = false);
+    }
+
+    async function executeQA() {
+      const { id, content } = getProcessInputs();
+      if (!id) return alert('Please enter a Document ID');
+      if (!content) return alert('Please enter document content');
+
+      const container = document.getElementById('prQA');
+      container.innerHTML = '<div class="process-loading"><div class="typing"><span></span><span></span><span></span></div>AI is analyzing document and generating Q&A pairs...</div>';
+      switchProcessResult('qa');
+
+      document.querySelectorAll('.process-btn').forEach(b => b.disabled = true);
+
+      try {
+        const res = await fetch(`${API}/api/documents/generate-qa`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, content }),
+        }).then(r => r.json());
+
+        if (!res.success) throw new Error(res.error);
+
+        document.getElementById('docCount').textContent = res.totalDocuments;
+
+        if (res.totalPairs === 0) {
+          container.innerHTML = '<div class="pr-empty"><p>AI could not generate Q&A pairs from this document. Try a longer or more detailed document.</p></div>';
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="process-summary">&#x2705; Generated & stored ${res.totalPairs} Q&A pairs (parent: ${res.parentId})</div>
+          ${res.pairs.map(p => `
+            <div class="qa-card" onclick="openDocModal('${p.id}', 'Q: ${p.question.replace(/'/g, "\\'")}\\nA: ${p.answer.replace(/'/g, "\\'").replace(/\n/g, "\\n")}')">
+              <div class="chunk-header">
+                <span class="chunk-label">${p.id}</span>
+                <span class="chunk-stored">Stored</span>
+              </div>
+              <div class="qa-question">${p.question}</div>
+              <div class="qa-answer">${p.answer}</div>
+            </div>
+          `).join('')}
+        `;
+      } catch (err) {
+        container.innerHTML = `<div class="pr-empty"><p>Error: ${err.message}</p></div>`;
+      }
+
+      document.querySelectorAll('.process-btn').forEach(b => b.disabled = false);
+    }
+
+    init();
+  </script>
+</body>
+</html>

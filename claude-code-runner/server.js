@@ -32,14 +32,25 @@ const STALL_ANALYSIS_MODEL = process.env.STALL_ANALYSIS_MODEL || 'claude-sonnet-
 const STALL_DETECTION_ENABLED = process.env.STALL_DETECTION !== 'false';          // enabled by default
 const STALL_CONTEXT_CHARS = 2000;
 
-// Available models — configure via MODELS env var (comma-separated) or edit defaults here
+// Available models — configure via MODELS env var (comma-separated) or edit defaults here.
+// Claude-native IDs (claude-*, opus/sonnet/haiku) spawn `claude --model <id>`.
+// Ollama IDs (everything else, e.g. `minimax-m2.7:cloud`) spawn
+// `ollama launch claude --model <id> -- --dangerously-skip-permissions`.
 const DEFAULT_MODELS = [
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', group: 'Claude' },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', group: 'Claude' },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', group: 'Claude' },
-  { id: 'minimax-m2.7:cloud', name: 'Minimax M2.7 Cloud', group: 'Other' },
-  { id: 'qwen3.5:397b-cloud', name: 'Qwen 3.5 397B Cloud', group: 'Other' },
+  { id: 'opus', name: 'Opus (alias)', group: 'Claude' },
+  { id: 'sonnet', name: 'Sonnet (alias)', group: 'Claude' },
+  { id: 'haiku', name: 'Haiku (alias)', group: 'Claude' },
+  { id: 'minimax-m2.7:cloud', name: 'Minimax M2.7 Cloud', group: 'Ollama' },
+  { id: 'qwen3.5:397b-cloud', name: 'Qwen 3.5 397B Cloud', group: 'Ollama' },
+  { id: 'glm-5.1:cloud', name: 'GLM 5.1 Cloud', group: 'Ollama' },
 ];
+
+function isClaudeNativeModel(id) {
+  return /^claude-/i.test(id) || /^(opus|sonnet|haiku)$/i.test(id);
+}
 
 function loadModels() {
   const envModels = process.env.MODELS;
@@ -56,18 +67,56 @@ const wss = new WebSocket.Server({ server });
 
 app.use(cors());
 
-// ─── Ollama API reverse proxy (streams /ollama-api/* → https://ollama.com/api/*) ──
-// Must be mounted BEFORE express.json() so request bodies stream through untouched.
-app.use('/ollama-api', (req, res) => {
-  const targetPath = '/api' + req.url;
+// ─── AI-Assistant reverse proxy (RAG + chat backend) ──────────────────────────
+// /assistant/* → ASSISTANT_URL/* (prefix stripped). Streams request + response.
+const ASSISTANT_URL = process.env.ASSISTANT_URL || 'http://ai-assistant:3000';
+app.use('/assistant', (req, res) => {
+  const target = new URL(ASSISTANT_URL);
   const headers = { ...req.headers };
   delete headers.host;
   delete headers['accept-encoding'];
 
-  const upstream = https.request(
+  const upstreamMod = target.protocol === 'https:' ? https : http;
+  const upstream = upstreamMod.request(
     {
-      hostname: 'ollama.com',
-      port: 443,
+      hostname: target.hostname,
+      port: target.port || (target.protocol === 'https:' ? 443 : 80),
+      path: (target.pathname.replace(/\/$/, '') + req.url) || '/',
+      method: req.method,
+      headers,
+    },
+    (upstreamRes) => {
+      res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    }
+  );
+  upstream.on('error', (err) => {
+    console.error('[assistant-proxy] error:', err.message);
+    if (!res.headersSent) res.status(502).json({ error: 'Assistant proxy failed: ' + err.message });
+    else res.end();
+  });
+  req.pipe(upstream);
+});
+
+// ─── Ollama API reverse proxy (streams /ollama-api/* → OLLAMA_URL/api/*) ────────
+// Default target is the in-compose `ollama` service. Override with OLLAMA_URL.
+// Must be mounted BEFORE express.json() so request bodies stream through untouched.
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama:11434';
+app.use('/ollama-api', (req, res) => {
+  const target = new URL(OLLAMA_URL);
+  const targetPath = (target.pathname.replace(/\/$/, '') + '/api' + req.url) || '/api' + req.url;
+  const headers = { ...req.headers };
+  delete headers.host;
+  delete headers['accept-encoding'];
+  if (process.env.OLLAMA_AUTH_TOKEN) {
+    headers['authorization'] = `Bearer ${process.env.OLLAMA_AUTH_TOKEN}`;
+  }
+
+  const upstreamMod = target.protocol === 'https:' ? https : http;
+  const upstream = upstreamMod.request(
+    {
+      hostname: target.hostname,
+      port: target.port || (target.protocol === 'https:' ? 443 : 80),
       path: targetPath,
       method: req.method,
       headers,
@@ -365,6 +414,8 @@ function runTask(task) {
   // Track state for auto-handling prompts
   let promptSent = false;
   let trustHandled = false;
+  let themeHandled = false;
+  let loginHandled = false;
   let claudeReady = false;
   let outputBuffer = '';
 
@@ -441,6 +492,34 @@ function runTask(task) {
 
     const cleanBuffer = stripAnsi(outputBuffer);
 
+    // Auto-handle first-run "Choose the text style" (theme picker) — accept default (dark mode).
+    // Match on multiple possible anchors since the first-paint can split across PTY chunks.
+    const cleanNoSpace = cleanBuffer.replace(/\s+/g, '');
+    if (
+      !themeHandled &&
+      (/Choose the text style|Dark mode|Light mode|color.?blind/i.test(cleanBuffer) ||
+        /Choosethetextstyle|Darkmode|Lightmode/i.test(cleanNoSpace))
+    ) {
+      themeHandled = true;
+      outputBuffer = '';
+      setTimeout(() => {
+        ptyProcess.write('\r');
+        console.log(`[Task ${task.id}] Auto-accepted theme picker (default)`);
+      }, 800);
+      return;
+    }
+
+    // Auto-handle first-run login screen — pick "Use Claude Code with your API key" / default
+    if (!loginHandled && /Log in with|API key|Anthropic Console|Select login method/i.test(cleanBuffer)) {
+      loginHandled = true;
+      outputBuffer = '';
+      setTimeout(() => {
+        ptyProcess.write('\r');
+        console.log(`[Task ${task.id}] Auto-accepted login screen (default)`);
+      }, 800);
+      return;
+    }
+
     // Auto-handle "Trust this folder" prompt — always active
     if (!trustHandled && /trust this folder|trust the files|Do you trust/i.test(cleanBuffer)) {
       trustHandled = true;
@@ -511,11 +590,19 @@ function runTask(task) {
 
   // Step 1: Wait for shell to be ready, then type the claude command
   setTimeout(() => {
-    const claudeCmd = task.model
-      ? `ollama launch claude --model ${task.model} -- --dangerously-skip-permissions\r`
-      : `claude --dangerously-skip-permissions\r`;
+    // Whitelist model id (alphanumeric + dash + dot + underscore + colon) to block shell injection.
+    const safeModel = task.model && /^[A-Za-z0-9._:-]+$/.test(task.model) ? task.model : null;
+    let claudeCmd;
+    if (!safeModel) {
+      claudeCmd = `claude --dangerously-skip-permissions\r`;
+    } else if (isClaudeNativeModel(safeModel)) {
+      claudeCmd = `claude --dangerously-skip-permissions --model ${safeModel}\r`;
+    } else {
+      // Ollama-hosted model — wrap claude through ollama's launcher.
+      claudeCmd = `ollama launch claude --model ${safeModel} -- --dangerously-skip-permissions\r`;
+    }
     ptyProcess.write(claudeCmd);
-    console.log(`[Task ${task.id}] Sent claude command`);
+    console.log(`[Task ${task.id}] Sent claude command${safeModel ? ` (model=${safeModel})` : ''}`);
 
     // Start watching for Claude prompts after a delay
     setTimeout(() => {
@@ -681,7 +768,7 @@ wss.on('connection', (ws) => {
 // ─── SPA fallback (trello-clone) ───────────────────────────────
 // Any non-API GET that hasn't matched so far returns the trello index.html
 // so React Router client-side routes resolve correctly.
-app.get(/^(?!\/api\/|\/runner|\/ollama-api).*/, (req, res, next) => {
+app.get(/^(?!\/api\/|\/runner|\/ollama-api|\/assistant).*/, (req, res, next) => {
   if (req.method !== 'GET') return next();
   const indexFile = path.join(TRELLO_DIST, 'index.html');
   if (fs.existsSync(indexFile)) return res.sendFile(indexFile);

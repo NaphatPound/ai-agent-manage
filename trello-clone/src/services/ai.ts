@@ -1,6 +1,6 @@
 const API_KEY = import.meta.env.VITE_OLLAMA_API_KEY || '';
 const BASE_URL = import.meta.env.VITE_OLLAMA_BASE_URL || 'https://ollama.com';
-const MODEL = import.meta.env.VITE_OLLAMA_MODEL || 'qwen3.5:397b';
+const MODEL = import.meta.env.VITE_OLLAMA_MODEL || 'minimax-m2.7:cloud';
 const VISION_MODEL = import.meta.env.VITE_OLLAMA_VISION_MODEL || 'gemma4:31b-cloud';
 const VOICE_MODEL = import.meta.env.VITE_OLLAMA_VOICE_MODEL || 'minimax-m2.7:cloud';
 // Same-origin proxy path in both dev and prod; server rewrites /ollama-api → ollama.com/api

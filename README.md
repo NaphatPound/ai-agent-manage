@@ -1,15 +1,19 @@
 # AI Agent Board
 
-Merged distribution of **trello-clone** (React + Vite frontend) and
-**Claude-Code-Runner** (Express + node-pty backend) served from a single
-Express process behind one port.
+Merged distribution of three projects served from a single gateway on port
+3456:
+
+- **trello-clone** — React + Vite board UI (root `/`)
+- **Claude-Code-Runner** — Express + node-pty terminal bridge (`/runner`, `/api/*`, WebSocket)
+- **ai-assistant** — RAG + chat + MCP orchestrator backed by Postgres + pgvector (`/assistant`)
 
 ```
 ai-agent-borad/
-├── Dockerfile           — multi-stage build (Vite → node-pty → runtime)
-├── docker-compose.yml   — one-command launch
-├── trello-clone/        — React frontend sources (built into dist at image-build time)
-└── claude-code-runner/  — Express server + WebSocket PTY bridge
+├── Dockerfile              — gateway image (Vite → node-pty → runtime)
+├── docker-compose.yml      — one-command launch (gateway + assistant + db)
+├── trello-clone/           — React frontend sources (built into dist at image-build time)
+├── claude-code-runner/     — Express server + WebSocket PTY bridge + MCP server
+└── ai-assistant/           — TypeScript RAG/chat service (its own Dockerfile)
 ```
 
 ## Run with one command
@@ -52,16 +56,36 @@ Environment variables (set in `docker-compose.yml` or via `-e` on `docker run`):
 | `STALL_DETECTION`     | `true`   | Set `false` to disable auto-unsticking          |
 | `MODELS`              | *(none)* | Comma-separated override of the models dropdown |
 
-## How the two projects are wired together
+## How the projects are wired together
 
 * At build time the Vite app is compiled to `trello-clone/dist`.
-* The runner's Express server (`claude-code-runner/server.js`) serves that
-  `dist/` directory at `/` and keeps its own UI at `/runner`.
-* `/api/*` continues to hit the runner REST API.
-* `/ollama-api/*` is reverse-proxied to `https://ollama.com/api/*` so the
-  frontend's AI calls work from the same origin (no CORS).
-* The WebSocket server attaches to the same HTTP port, so the browser's
-  `ws://<host>:3456` terminal stream works without a second port.
+* The runner's Express server (`claude-code-runner/server.js`) acts as the
+  single gateway:
+  * `/` → trello-clone SPA
+  * `/runner/*` → original runner terminal UI
+  * `/api/*` → runner REST API (tasks, models, stop/delete)
+  * `/assistant/*` → reverse-proxied to the `ai-assistant` container (RAG, chat, documents)
+  * `/ollama-api/*` → reverse-proxied to `https://ollama.com/api/*`
+  * WebSocket (`ws://<host>:3456`) attaches to the same HTTP server for PTY streaming
+* `ai-assistant` connects to the `db` service (pgvector) over the compose network.
+* The single published port is `3456` — everything else stays on the internal
+  compose network.
+
+## RAG / memory for dev work
+
+`ai-assistant` exposes a semantic store backed by pgvector. The runner's MCP
+server (`claude-code-runner/mcp-server/index.js`) ships three RAG-aware tools
+so Claude Code sessions can capture and recall long-lived context:
+
+| Tool              | What it does                                                   |
+| ----------------- | -------------------------------------------------------------- |
+| `save_dev_log`    | Chunks + embeds a dev-log entry (decision / memory / doc)       |
+| `search_dev_logs` | Semantic search over saved logs with % match scores             |
+| `ask_dev_memory`  | Grounded Q&A via the assistant's `/api/chat` (RAG + LLM)        |
+
+Register the MCP server in your Claude Code config to let it auto-save
+rationale, bug notes, and feature specs as you work, and retrieve them on the
+next session.
 
 ## Notes
 

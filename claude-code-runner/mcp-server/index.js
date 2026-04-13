@@ -4,6 +4,10 @@ import { z } from "zod";
 
 // ─── Config ────────────────────────────────────────────────
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3456";
+// RAG base — points at the assistant via the merged gateway by default.
+// Override with ASSISTANT_URL to hit it directly.
+const RAG_BASE =
+  process.env.ASSISTANT_URL || `${BACKEND_URL}/assistant`;
 
 // ─── Helper: call the Claude Code Runner REST API ──────────
 async function api(path, options = {}) {
@@ -272,6 +276,125 @@ server.tool(
         },
       ],
     };
+  }
+);
+
+// ─── RAG helpers ───────────────────────────────────────────
+async function ragCall(path, options = {}) {
+  const res = await fetch(`${RAG_BASE}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`RAG ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+// ─── Tool: save_dev_log ────────────────────────────────────
+// Persist a dev-time note / memory / decision into the RAG vector store
+// so it can be recalled later by semantic search.
+server.tool(
+  "save_dev_log",
+  "Save a development log entry, decision, insight, or memory into the RAG vector store. Use this during Claude Code sessions to capture context that should outlive the current conversation — e.g. bugfix rationale, architectural decisions, API quirks, TODOs, feature specs.",
+  {
+    id: z
+      .string()
+      .optional()
+      .describe("Unique id for this entry — auto-generated if omitted"),
+    title: z.string().describe("Short human-readable title"),
+    content: z.string().describe("The log body — markdown is fine"),
+    project: z
+      .string()
+      .optional()
+      .describe("Project name this log belongs to (e.g. 'ai-agent-board')"),
+    kind: z
+      .enum(["log", "decision", "memory", "doc", "todo", "bug", "feature"])
+      .optional()
+      .default("log")
+      .describe("Category for filtering later"),
+    tags: z.array(z.string()).optional().describe("Free-form tags"),
+  },
+  async ({ id, title, content, project, kind, tags }) => {
+    const docId = id || `${kind || "log"}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const body = `# ${title}\n\n${content}`;
+    const metadata = {
+      title,
+      project: project || "unknown",
+      kind: kind || "log",
+      tags: tags || [],
+      source: "claude-code-runner",
+      savedAt: new Date().toISOString(),
+    };
+
+    const result = await ragCall("/api/documents/split", {
+      method: "POST",
+      body: JSON.stringify({ id: docId, content: body, mode: "chunk", chunkSize: 400, metadata }),
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Saved dev log "${title}" (id=${docId}) — ${result.parts || 0} chunks embedded.\nTotal docs in RAG: ${result.totalDocuments}`,
+        },
+      ],
+    };
+  }
+);
+
+// ─── Tool: search_dev_logs ─────────────────────────────────
+server.tool(
+  "search_dev_logs",
+  "Semantic search over previously-saved dev logs, decisions, memories, and docs in the RAG store. Use this BEFORE starting new work to recall prior context on the same project / feature / bug.",
+  {
+    query: z.string().describe("Natural-language query"),
+    top_k: z.number().optional().default(5).describe("How many results to return"),
+  },
+  async ({ query, top_k }) => {
+    const result = await ragCall("/api/documents/search", {
+      method: "POST",
+      body: JSON.stringify({ query, topK: top_k }),
+    });
+
+    if (!result.results || result.results.length === 0) {
+      return { content: [{ type: "text", text: `No matches for "${query}".` }] };
+    }
+
+    const lines = result.results.map(
+      (r, i) =>
+        `[${i + 1}] (${r.matchPercent}% match) ${r.id}\n${(r.content || "").slice(0, 400)}`
+    );
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Top ${result.results.length} matches for "${query}":\n\n${lines.join("\n\n")}`,
+        },
+      ],
+    };
+  }
+);
+
+// ─── Tool: ask_dev_memory ──────────────────────────────────
+// Ask the assistant's chat endpoint a question — it runs RAG retrieval
+// + LLM synthesis internally and returns a grounded answer.
+server.tool(
+  "ask_dev_memory",
+  "Ask the AI assistant a question about past development work. It performs RAG retrieval over the dev-log store and returns a grounded answer with sources. Use for questions like 'why did we switch to X?' or 'what did we decide about Y?'",
+  {
+    question: z.string().describe("Natural-language question"),
+    model: z.string().optional().describe("Optional model override"),
+  },
+  async ({ question, model }) => {
+    const result = await ragCall("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: question, history: [], model }),
+    });
+    const answer = result.answer || result.response || JSON.stringify(result);
+    return { content: [{ type: "text", text: answer }] };
   }
 );
 

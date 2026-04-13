@@ -35,19 +35,28 @@ ENV NODE_ENV=production \
 
 # Runtime tools the runner shell-spawns (bash, git, curl) plus certs for outbound HTTPS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash git curl ca-certificates tini \
+      bash git curl ca-certificates tini zstd \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code --no-audit --no-fund
+    && npm install -g @anthropic-ai/claude-code --no-audit --no-fund \
+    && ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://github.com/ollama/ollama/releases/latest/download/ollama-linux-${ARCH}.tar.zst" -o /tmp/ollama.tar.zst \
+    && tar --zstd -xf /tmp/ollama.tar.zst -C /usr/local \
+    && rm /tmp/ollama.tar.zst \
+    && useradd --create-home --shell /bin/bash --uid 1001 runner \
+    && mkdir -p /workspace /app /home/runner/.claude /home/runner/.ollama \
+    && echo '{}' > /home/runner/.claude.json \
+    && chown -R runner:runner /workspace /app /home/runner
 
 WORKDIR /app
 
 # Built frontend (served by the runner's express server at /)
-COPY --from=web-build /app/trello-clone/dist /app/trello-clone/dist
+COPY --from=web-build --chown=runner:runner /app/trello-clone/dist /app/trello-clone/dist
 
 # Runner server + its pre-installed dependencies
-COPY --from=runner-deps /app/claude-code-runner/node_modules /app/claude-code-runner/node_modules
-COPY claude-code-runner/ /app/claude-code-runner/
+COPY --from=runner-deps --chown=runner:runner /app/claude-code-runner/node_modules /app/claude-code-runner/node_modules
+COPY --chown=runner:runner claude-code-runner/ /app/claude-code-runner/
 
+USER runner
 WORKDIR /app/claude-code-runner
 EXPOSE 3456
 
