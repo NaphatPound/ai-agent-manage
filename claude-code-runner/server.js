@@ -1184,6 +1184,120 @@ app.post('/api/fs/mkdir', (req, res) => {
   }
 });
 
+// Write arbitrary text content to a file (auto-creates parent dirs). Guarded
+// to home-dir paths and to a 2MB content cap so the browser can't accidentally
+// DoS the disk.
+app.post('/api/fs/write', (req, res) => {
+  try {
+    const body = req.body || {};
+    const target = resolveSafePath(body.path);
+    const content = typeof body.content === 'string' ? body.content : '';
+    const overwrite = body.overwrite !== false; // default true
+
+    const home = os.homedir();
+    const homeWithSep = home.endsWith(path.sep) ? home : home + path.sep;
+    if (target !== home && !target.startsWith(homeWithSep)) {
+      return res.status(403).json({
+        error: `For safety, files can only be written under your home directory (${home})`,
+        path: target,
+        home,
+      });
+    }
+    if (content.length > 2 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Content exceeds 2MB limit' });
+    }
+    if (!overwrite && fs.existsSync(target)) {
+      return res.status(409).json({ error: 'File already exists', path: target });
+    }
+
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+    res.json({ path: target, bytes: Buffer.byteLength(content, 'utf8'), written: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Skill library ──────────────────────────────────────────────
+// Bundled markdown files that users can preview and copy into their
+// project's .claude/skills/ directory with one click. Files live in
+// claude-code-runner/skills-library/*.md; the front-matter up top is
+// parsed for title/description/tags.
+const SKILLS_LIBRARY_DIR = path.join(__dirname, 'skills-library');
+
+function parseSkillFrontmatter(raw) {
+  // Accept an optional YAML-ish front-matter block: --- ... ---
+  const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  const meta = { title: '', description: '', tags: [] };
+  let body = raw;
+  if (match) {
+    body = raw.slice(match[0].length);
+    const block = match[1];
+    for (const line of block.split('\n')) {
+      const kv = line.match(/^(\w+):\s*(.*)$/);
+      if (!kv) continue;
+      const [, key, value] = kv;
+      if (key === 'title') meta.title = value.trim();
+      else if (key === 'description') meta.description = value.trim();
+      else if (key === 'tags') {
+        meta.tags = value
+          .replace(/^\[|\]$/g, '')
+          .split(',')
+          .map((t) => t.trim().replace(/^["']|["']$/g, ''))
+          .filter(Boolean);
+      }
+    }
+  }
+  return { meta, body };
+}
+
+function loadSkillLibrary() {
+  if (!fs.existsSync(SKILLS_LIBRARY_DIR)) return [];
+  const out = [];
+  let files = [];
+  try { files = fs.readdirSync(SKILLS_LIBRARY_DIR); } catch { return []; }
+  for (const file of files) {
+    if (!file.endsWith('.md')) continue;
+    const fullPath = path.join(SKILLS_LIBRARY_DIR, file);
+    try {
+      const raw = fs.readFileSync(fullPath, 'utf8');
+      const { meta } = parseSkillFrontmatter(raw);
+      out.push({
+        name: file.replace(/\.md$/, ''),
+        file,
+        title: meta.title || file.replace(/\.md$/, ''),
+        description: meta.description || '',
+        tags: meta.tags,
+        bytes: Buffer.byteLength(raw, 'utf8'),
+      });
+    } catch { /* skip malformed */ }
+  }
+  return out.sort((a, b) => a.title.localeCompare(b.title));
+}
+
+app.get('/api/skills/library', (_req, res) => {
+  res.json({ skills: loadSkillLibrary() });
+});
+
+app.get('/api/skills/library/:name', (req, res) => {
+  const name = String(req.params.name || '').replace(/[^A-Za-z0-9._-]/g, '');
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const fullPath = path.join(SKILLS_LIBRARY_DIR, name + '.md');
+  if (!fullPath.startsWith(SKILLS_LIBRARY_DIR)) {
+    return res.status(400).json({ error: 'invalid name' });
+  }
+  if (!fs.existsSync(fullPath)) {
+    return res.status(404).json({ error: 'Skill not found' });
+  }
+  try {
+    const raw = fs.readFileSync(fullPath, 'utf8');
+    const { meta, body } = parseSkillFrontmatter(raw);
+    res.json({ name, raw, body, meta });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── REST API ──────────────────────────────────────────────────
 app.post('/api/tasks', (req, res) => {
   try {

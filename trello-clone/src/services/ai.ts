@@ -530,6 +530,100 @@ ${transcript}`;
   };
 }
 
+// ─── Skill generator ───────────────────────────────────────────────────────
+// Turn a free-text description into a Claude Code skill markdown file.
+
+const SKILL_GENERATOR_SYSTEM_PROMPT = `You are a Claude Code skill author. Given a short description of what a user wants the skill to do, produce a complete, production-ready skill markdown file.
+
+Output ONLY the markdown content, no code fences, no <think> tags, no prose before or after.
+
+Structure the file like this:
+
+---
+title: <short human title, 3-6 words>
+description: <one-sentence summary of what this skill does>
+tags: [<2-4 comma-separated kebab-case tags>]
+---
+
+# <Same title as above>
+
+<One short paragraph explaining the skill's purpose.>
+
+## Inputs
+<Bulleted list of what the user / calling agent must supply.>
+
+## Output format
+<Describe exactly what the skill should return, including any structural requirements like markdown sections or JSON shape.>
+
+## Rules
+<Bulleted list of constraints, edge cases to handle, and things never to do.>
+
+Rules for you the author:
+- Keep the whole file under 300 words unless the skill is genuinely complex.
+- Be concrete. Avoid generic advice like "be helpful".
+- If the description is too vague, make a sensible interpretation and state one assumption at the top.
+- Never invent tools, APIs, or file paths the user did not mention.
+- Mirror the user's language if they wrote in Thai.`;
+
+export async function generateSkillMarkdown(
+  description: string,
+  onChunk?: (partial: string) => void
+): Promise<string> {
+  const body = JSON.stringify({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: SKILL_GENERATOR_SYSTEM_PROMPT },
+      { role: 'user', content: `Write the skill for: ${description}` },
+    ],
+    stream: true,
+  });
+
+  const response = await fetch(API_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(API_KEY ? { 'Authorization': `Bearer ${API_KEY}` } : {}),
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AI API error (${response.status}): ${errorText}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response body');
+
+  const decoder = new TextDecoder();
+  let full = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        const token = parsed.message?.content ?? '';
+        if (token) {
+          full += token;
+          onChunk?.(full);
+        }
+      } catch { /* skip malformed */ }
+    }
+  }
+
+  // Strip thinking tags + code fences the model might accidentally emit.
+  return full
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/^```(?:markdown|md)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+}
+
 export async function generateDescriptionAndChecklist(
   title: string,
   onChunk?: (partial: string) => void

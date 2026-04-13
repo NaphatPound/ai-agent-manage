@@ -271,6 +271,53 @@ export async function fsMkdir(targetPath: string): Promise<{ path: string; creat
   return data;
 }
 
+export async function fsWrite(
+  targetPath: string,
+  content: string,
+  opts: { overwrite?: boolean } = {}
+): Promise<{ path: string; bytes: number; written: boolean }> {
+  const res = await fetch(`${RUNNER_BASE}/api/fs/write`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: targetPath, content, overwrite: opts.overwrite !== false }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `write failed: ${res.status}`);
+  return data;
+}
+
+// ─── Skill library ──────────────────────────────────────────
+
+export interface SkillLibraryEntry {
+  name: string;
+  file: string;
+  title: string;
+  description: string;
+  tags: string[];
+  bytes: number;
+}
+
+export interface SkillLibraryContent {
+  name: string;
+  raw: string;
+  body: string;
+  meta: { title?: string; description?: string; tags?: string[] };
+}
+
+export async function listSkillLibrary(): Promise<SkillLibraryEntry[]> {
+  const res = await fetch(`${RUNNER_BASE}/api/skills/library`, { headers: getHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `list skills failed: ${res.status}`);
+  return data.skills || [];
+}
+
+export async function getSkillFromLibrary(name: string): Promise<SkillLibraryContent> {
+  const res = await fetch(`${RUNNER_BASE}/api/skills/library/${encodeURIComponent(name)}`, { headers: getHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `get skill failed: ${res.status}`);
+  return data;
+}
+
 // ─── Utilities ───────────────────────────────────────────────
 
 export function stripAnsi(text: string): string {
