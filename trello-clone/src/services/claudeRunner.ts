@@ -19,6 +19,7 @@ function getHeaders(): Record<string, string> {
 export interface RunnerModel {
   id: string;
   name: string;
+  group?: string;
 }
 
 export interface RunnerTask {

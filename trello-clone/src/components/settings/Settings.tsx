@@ -121,11 +121,27 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                 disabled={modelsLoading}
               >
                 <option value="">Default (runner's default)</option>
-                {models.map(m => (
-                  <option key={m.id} value={m.id}>
-                    {m.name || m.id}
-                  </option>
-                ))}
+                {(() => {
+                  const grouped = new Map<string, RunnerModel[]>();
+                  for (const m of models) {
+                    const key = m.group || 'Other';
+                    if (!grouped.has(key)) grouped.set(key, []);
+                    grouped.get(key)!.push(m);
+                  }
+                  // Render ungrouped as flat options, grouped entries as <optgroup>
+                  if (grouped.size === 1 && grouped.has('Other')) {
+                    return models.map(m => (
+                      <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                    ));
+                  }
+                  return Array.from(grouped.entries()).map(([group, items]) => (
+                    <optgroup key={group} label={group}>
+                      {items.map(m => (
+                        <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                      ))}
+                    </optgroup>
+                  ));
+                })()}
               </select>
             )}
             {selectedModel && (

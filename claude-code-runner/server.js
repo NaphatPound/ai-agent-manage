@@ -37,9 +37,10 @@ const STALL_DETECTION_ENABLED = process.env.STALL_DETECTION !== 'false';        
 const STALL_CONTEXT_CHARS = 2000;
 
 // Available models — configure via MODELS env var (comma-separated) or edit defaults here.
-// Claude-native IDs (claude-*, opus/sonnet/haiku) spawn `claude --model <id>`.
-// Ollama IDs (everything else, e.g. `minimax-m2.7:cloud`) spawn
-// `ollama launch claude --model <id> -- --dangerously-skip-permissions`.
+// Claude-native IDs (claude-*, opus/sonnet/haiku)  → `claude --model <id>`
+// Gemini IDs (gemini-*)                            → `gemini -y -m <id>`
+// Ollama IDs (everything else, e.g. `minimax-m2.7:cloud`)
+//                                                  → `ollama launch claude --model <id> -- --dangerously-skip-permissions`
 const DEFAULT_MODELS = [
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', group: 'Claude' },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', group: 'Claude' },
@@ -47,6 +48,9 @@ const DEFAULT_MODELS = [
   { id: 'opus', name: 'Opus (alias)', group: 'Claude' },
   { id: 'sonnet', name: 'Sonnet (alias)', group: 'Claude' },
   { id: 'haiku', name: 'Haiku (alias)', group: 'Claude' },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', group: 'Gemini' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', group: 'Gemini' },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', group: 'Gemini' },
   { id: 'minimax-m2.7:cloud', name: 'Minimax M2.7 Cloud', group: 'Ollama' },
   { id: 'qwen3.5:397b-cloud', name: 'Qwen 3.5 397B Cloud', group: 'Ollama' },
   { id: 'glm-5.1:cloud', name: 'GLM 5.1 Cloud', group: 'Ollama' },
@@ -55,6 +59,20 @@ const DEFAULT_MODELS = [
 function isClaudeNativeModel(id) {
   return /^claude-/i.test(id) || /^(opus|sonnet|haiku)$/i.test(id);
 }
+
+function isGeminiModel(id) {
+  return /^gemini/i.test(id);
+}
+
+function providerFor(modelId) {
+  if (!modelId) return 'claude';
+  if (isGeminiModel(modelId)) return 'gemini';
+  if (isClaudeNativeModel(modelId)) return 'claude';
+  return 'ollama';
+}
+
+// Gemini tasks fall back to silence-based completion (no ❯ prompt to watch).
+const GEMINI_IDLE_COMPLETION_MS = parseInt(process.env.GEMINI_IDLE_COMPLETION_MS || '15000');
 
 function loadModels() {
   const envModels = process.env.MODELS;
@@ -519,9 +537,29 @@ function runTask(task) {
   function triggerExit() {
     if (exitSent) return;
     exitSent = true;
-    console.log(`[Task ${task.id}] Task complete — sending /exit`);
-    ptyProcess.write('/exit\r');
-    setTimeout(() => { ptyProcess.write('exit\r'); }, 2000);
+    if (task.provider === 'gemini') {
+      // Gemini CLI: `/quit` is the only clean way out — do NOT follow up with a
+      // shell `exit`, because if gemini hasn't finished shutting down yet the
+      // `exit` is typed into gemini's prompt instead of the shell. Give gemini
+      // a moment to quit on its own, then kill the PTY if it's still alive.
+      console.log(`[Task ${task.id}] Task complete — sending /quit`);
+      ptyProcess.write('/quit\r');
+      setTimeout(() => {
+        try { ptyProcess.kill(); } catch { /* already exited */ }
+      }, 3000);
+    } else {
+      console.log(`[Task ${task.id}] Task complete — sending /exit`);
+      ptyProcess.write('/exit\r');
+      setTimeout(() => { ptyProcess.write('exit\r'); }, 2000);
+    }
+  }
+
+  // Gemini CLI has no ❯ idle marker — fall back to silence-based completion.
+  let geminiIdleTimer = null;
+  function armGeminiIdleTimer() {
+    if (task.provider !== 'gemini' || exitSent || !claudeWorking) return;
+    if (geminiIdleTimer) clearTimeout(geminiIdleTimer);
+    geminiIdleTimer = setTimeout(() => triggerExit(), GEMINI_IDLE_COMPLETION_MS);
   }
 
   // Stream ALL output to browser via WebSocket
@@ -530,10 +568,11 @@ function runTask(task) {
     outputBuffer += data;
     broadcast(task, { type: 'output', data });
 
-    // Reset stall timer on any new output
+    // Reset idle/stall timers on any new output
     lastOutputTime = Date.now();
     if (claudeWorking && promptSent && !exitSent) {
       armStallTimer();
+      armGeminiIdleTimer();
     }
 
     const cleanBuffer = stripAnsi(outputBuffer);
@@ -580,8 +619,8 @@ function runTask(task) {
     // Wait for claudeReady before detecting other prompts
     if (!claudeReady) return;
 
-    // Auto-send the task prompt once Claude Code is ready
-    if (!promptSent && /Tips|bypass permissions|What can I help|How can I help/i.test(cleanBuffer)) {
+    // Auto-send the task prompt once the CLI is ready (Claude or Gemini)
+    if (!promptSent && /Tips|bypass permissions|What can I help|How can I help|Type your message|YOLO mode/i.test(cleanBuffer)) {
       promptSent = true;
       outputBuffer = '';
       setTimeout(() => {
@@ -626,6 +665,7 @@ function runTask(task) {
   ptyProcess.onExit(({ exitCode }) => {
     if (completionTimer) clearTimeout(completionTimer);
     if (stallTimer) clearTimeout(stallTimer);
+    if (geminiIdleTimer) clearTimeout(geminiIdleTimer);
     task.exitCode = exitCode;
     task.status = exitCode === 0 ? 'completed' : 'failed';
     task.finishedAt = new Date().toISOString();
@@ -634,21 +674,25 @@ function runTask(task) {
     notifyStatusChange(task, { exitCode, finishedAt: task.finishedAt });
   });
 
-  // Step 1: Wait for shell to be ready, then type the claude command
+  // Step 1: Wait for shell to be ready, then type the CLI command
   setTimeout(() => {
     // Whitelist model id (alphanumeric + dash + dot + underscore + colon) to block shell injection.
     const safeModel = task.model && /^[A-Za-z0-9._:-]+$/.test(task.model) ? task.model : null;
+    task.provider = providerFor(safeModel);
+
     let claudeCmd;
-    if (!safeModel) {
+    if (task.provider === 'gemini') {
+      claudeCmd = `gemini -y -m ${safeModel}\r`;
+    } else if (!safeModel) {
       claudeCmd = `claude --dangerously-skip-permissions\r`;
-    } else if (isClaudeNativeModel(safeModel)) {
+    } else if (task.provider === 'claude') {
       claudeCmd = `claude --dangerously-skip-permissions --model ${safeModel}\r`;
     } else {
       // Ollama-hosted model — wrap claude through ollama's launcher.
       claudeCmd = `ollama launch claude --model ${safeModel} -- --dangerously-skip-permissions\r`;
     }
     ptyProcess.write(claudeCmd);
-    console.log(`[Task ${task.id}] Sent claude command${safeModel ? ` (model=${safeModel})` : ''}`);
+    console.log(`[Task ${task.id}] Sent ${task.provider} command${safeModel ? ` (model=${safeModel})` : ''}`);
 
     // Start watching for Claude prompts after a delay
     setTimeout(() => {

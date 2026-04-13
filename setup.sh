@@ -74,6 +74,13 @@ if ! command -v claude >/dev/null 2>&1; then
     warn "Global install failed — re-run with sudo or install manually"
 fi
 
+# gemini CLI (optional — used by the runner when a Gemini model is selected)
+if ! command -v gemini >/dev/null 2>&1; then
+  log "Installing @google/gemini-cli globally (optional — Gemini mode)"
+  npm install -g @google/gemini-cli --no-audit --no-fund || \
+    warn "Gemini CLI install failed — Gemini mode will be unavailable until installed manually"
+fi
+
 # ─── 2. Start Postgres + Ollama (macOS only — brew services) ─
 if [ "$OS" = "Darwin" ] && [ "$HAS_BREW" -eq 1 ]; then
   if ! pg_isready -q 2>/dev/null; then
