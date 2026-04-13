@@ -12,12 +12,13 @@ import './header.css';
 const AppHeader: React.FC = () => {
   const [showCreate, setShowCreate] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
-  const [showTaskManager, setShowTaskManager] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [searchText, setSearchText] = useState('');
   const location = useLocation();
   const boards = useBoardStore(s => s.boards);
   const { setSearchQuery } = useUIStore();
+  const showTaskManager = useUIStore(s => s.showClaudeRunner);
+  const setShowTaskManager = useUIStore(s => s.setShowClaudeRunner);
   const isBoardPage = location.pathname.startsWith('/board/');
 
   const handleSearch = (val: string) => {

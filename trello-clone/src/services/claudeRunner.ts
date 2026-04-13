@@ -29,12 +29,14 @@ export interface RunnerTask {
   callbackUrl?: string;
   model?: string;
   mode?: 'one-time' | 'loop';
-  status: 'queued' | 'running' | 'loop' | 'completed' | 'failed' | 'stopped';
+  status: 'queued' | 'running' | 'loop' | 'awaiting_user' | 'completed' | 'failed' | 'stopped';
   output: string;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
   exitCode: number | null;
+  awaitingSituation?: string | null;
+  awaitingQuestion?: string | null;
 }
 
 export interface RunnerTaskStatus {
@@ -50,7 +52,7 @@ export interface RunnerTaskStatus {
 export interface RunnerTaskSummary {
   id: string;
   prompt: string;
-  status: 'queued' | 'running' | 'loop' | 'completed' | 'failed' | 'stopped';
+  status: 'queued' | 'running' | 'loop' | 'awaiting_user' | 'completed' | 'failed' | 'stopped';
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -135,7 +137,9 @@ export async function deleteRunnerTask(taskId: string): Promise<void> {
 
 export type WsMessage =
   | { type: 'output'; data: string }
-  | { type: 'status'; status: string; startedAt?: string; finishedAt?: string; exitCode?: number };
+  | { type: 'status'; status: string; startedAt?: string; finishedAt?: string; exitCode?: number }
+  | { type: 'awaiting_user'; taskId: string; boardId: string | null; situation: string; question: string }
+  | { type: 'stall_response'; situation: string; action: string; response?: string | null };
 
 export interface RunnerWebSocket {
   subscribe: (taskId: string) => void;
@@ -223,6 +227,48 @@ export function connectRunnerWs(): RunnerWebSocket {
       return ws?.readyState === WebSocket.OPEN;
     },
   };
+}
+
+// ─── Filesystem browser ─────────────────────────────────────
+
+export interface FsEntry {
+  name: string;
+  isDir: boolean;
+}
+
+export interface FsListResult {
+  path: string;
+  parent: string | null;
+  home: string;
+  entries: FsEntry[];
+}
+
+export async function listFsDirectory(targetPath?: string, showHidden = false): Promise<FsListResult> {
+  const qs = new URLSearchParams();
+  if (targetPath) qs.set('path', targetPath);
+  if (showHidden) qs.set('hidden', '1');
+  const res = await fetch(`${RUNNER_BASE}/api/fs/list?${qs.toString()}`, { headers: getHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `list failed: ${res.status}`);
+  return data;
+}
+
+export async function fsExists(targetPath: string): Promise<{ path: string; exists: boolean; isDir: boolean }> {
+  const res = await fetch(`${RUNNER_BASE}/api/fs/exists?path=${encodeURIComponent(targetPath)}`, { headers: getHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `exists failed: ${res.status}`);
+  return data;
+}
+
+export async function fsMkdir(targetPath: string): Promise<{ path: string; created: boolean }> {
+  const res = await fetch(`${RUNNER_BASE}/api/fs/mkdir`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: targetPath }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `mkdir failed: ${res.status}`);
+  return data;
 }
 
 // ─── Utilities ───────────────────────────────────────────────

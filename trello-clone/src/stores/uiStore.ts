@@ -1,5 +1,13 @@
 import { create } from 'zustand';
 
+export interface AwaitingUserEntry {
+  taskId: string;
+  boardId: string | null;
+  situation: string;
+  question: string;
+  at: number;
+}
+
 interface UIState {
   isSidebarOpen: boolean;
   activeCardId: string | null;
@@ -9,6 +17,10 @@ interface UIState {
   filterLabels: string[];
   filterMembers: string[];
   filterDueDate: string | null;
+  // Claude Code Runner global state
+  showClaudeRunner: boolean;
+  runnerFocusTaskId: string | null;
+  awaitingUserTasks: Record<string, AwaitingUserEntry>;
 
   toggleSidebar: () => void;
   setSidebarOpen: (open: boolean) => void;
@@ -22,6 +34,11 @@ interface UIState {
   toggleFilterMember: (memberId: string) => void;
   setFilterDueDate: (filter: string | null) => void;
   clearFilters: () => void;
+  setShowClaudeRunner: (open: boolean) => void;
+  openRunnerForTask: (taskId: string) => void;
+  setRunnerFocusTaskId: (taskId: string | null) => void;
+  markAwaitingUser: (entry: AwaitingUserEntry) => void;
+  clearAwaitingUser: (taskId: string) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -33,12 +50,26 @@ export const useUIStore = create<UIState>((set) => ({
   filterLabels: [],
   filterMembers: [],
   filterDueDate: null,
+  showClaudeRunner: false,
+  runnerFocusTaskId: null,
+  awaitingUserTasks: {},
 
   toggleSidebar: () => set(s => ({ isSidebarOpen: !s.isSidebarOpen })),
   setSidebarOpen: (open) => set({ isSidebarOpen: open }),
   openCard: (cardId) => set({ activeCardId: cardId }),
   closeCard: () => set({ activeCardId: null }),
   setActiveBoardId: (boardId) => set({ activeBoardId: boardId }),
+  setShowClaudeRunner: (open) => set({ showClaudeRunner: open }),
+  setRunnerFocusTaskId: (taskId) => set({ runnerFocusTaskId: taskId }),
+  openRunnerForTask: (taskId) => set({ showClaudeRunner: true, runnerFocusTaskId: taskId }),
+  markAwaitingUser: (entry) => set(s => ({
+    awaitingUserTasks: { ...s.awaitingUserTasks, [entry.taskId]: entry },
+  })),
+  clearAwaitingUser: (taskId) => set(s => {
+    const next = { ...s.awaitingUserTasks };
+    delete next[taskId];
+    return { awaitingUserTasks: next };
+  }),
   toggleBoardMenu: () => set(s => ({ activeBoardMenuOpen: !s.activeBoardMenuOpen })),
   closeBoardMenu: () => set({ activeBoardMenuOpen: false }),
   setSearchQuery: (query) => set({ searchQuery: query }),

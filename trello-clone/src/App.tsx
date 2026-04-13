@@ -6,6 +6,8 @@ import HomePage from './pages/HomePage';
 import BoardPage from './pages/BoardPage';
 import NotFoundPage from './pages/NotFoundPage';
 import CreateBoard from './components/workspace/CreateBoard';
+import GlobalRunnerWatcher from './components/claude/GlobalRunnerWatcher';
+import AwaitingUserToast from './components/claude/AwaitingUserToast';
 import { useBoardStore } from './stores/boardStore';
 import { useUIStore } from './stores/uiStore';
 import './styles/animations.css';
@@ -44,6 +46,8 @@ function AppContent() {
         </main>
       </div>
       {showCreate && <CreateBoard onClose={() => setShowCreate(false)} />}
+      <GlobalRunnerWatcher />
+      <AwaitingUserToast />
     </div>
   );
 }

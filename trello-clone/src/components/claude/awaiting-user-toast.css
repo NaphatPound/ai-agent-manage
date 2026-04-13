@@ -1,0 +1,119 @@
+.awaiting-toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 400px;
+  pointer-events: none;
+}
+
+.awaiting-toast {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #14142a 100%);
+  border: 1px solid #ffaa00;
+  border-left: 4px solid #ffaa00;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 170, 0, 0.1);
+  color: #e6edf3;
+  pointer-events: auto;
+  animation: awaiting-slide-in 0.25s ease;
+}
+
+@keyframes awaiting-slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.awaiting-toast-icon {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 170, 0, 0.15);
+  border-radius: 6px;
+  color: #ffaa00;
+  flex-shrink: 0;
+}
+
+.awaiting-toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.awaiting-toast-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffaa00;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 4px;
+}
+
+.awaiting-toast-question {
+  font-size: 13px;
+  line-height: 1.4;
+  color: #e6edf3;
+  word-break: break-word;
+  margin-bottom: 6px;
+}
+
+.awaiting-toast-meta {
+  font-size: 10px;
+  color: #8b949e;
+  font-family: 'Menlo', 'Monaco', monospace;
+}
+
+.awaiting-toast-meta code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.awaiting-toast-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.awaiting-toast-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.1s;
+}
+
+.awaiting-toast-btn--primary {
+  background: #ffaa00;
+  color: #1a1a2e;
+  font-weight: 600;
+}
+
+.awaiting-toast-btn--primary:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.awaiting-toast-btn--dismiss {
+  background: transparent;
+  color: #8b949e;
+  padding: 4px;
+}
+
+.awaiting-toast-btn--dismiss:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6edf3;
+}

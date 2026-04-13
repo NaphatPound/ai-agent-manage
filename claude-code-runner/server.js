@@ -210,6 +210,8 @@ class Task {
     this.boardId = boardId || null;
     this.mode = mode === 'loop' ? 'loop' : 'one-time';
     this.status = 'queued';
+    this.awaitingSituation = null;
+    this.awaitingQuestion = null;
     this.output = '';
     this.createdAt = new Date().toISOString();
     this.startedAt = null;
@@ -236,12 +238,14 @@ class Task {
       finishedAt: this.finishedAt,
       exitCode: this.exitCode,
       stallResponses: this.stallResponses,
+      awaitingSituation: this.awaitingSituation,
+      awaitingQuestion: this.awaitingQuestion,
     };
   }
 
   toStatus() {
-    // 'loop' tasks are intentionally kept alive after going idle, so they are
-    // NOT considered done — only the terminal states are.
+    // 'loop' and 'awaiting_user' tasks are intentionally kept alive, so they
+    // are NOT considered done — only the terminal states are.
     const done = ['completed', 'failed', 'stopped'].includes(this.status);
     return {
       id: this.id,
@@ -300,23 +304,25 @@ let stallApiKeyWarned = false;
 const STALL_SYSTEM_PROMPT = `You are analyzing terminal output from Claude Code CLI that has stopped producing output for a while.
 Determine what Claude Code is waiting for and respond with ONLY a JSON object (no markdown, no explanation, no <think> tags):
 {
-  "situation": "brief description of what's happening",
-  "action": "press_enter" | "press_yes" | "press_no" | "type_text" | "send_instruction" | "skip",
+  "situation": "brief description of what's happening (one short sentence)",
+  "question": "if Claude is asking a question, restate it in plain English; otherwise empty string",
+  "action": "press_enter" | "press_yes" | "press_no" | "type_text" | "send_instruction" | "ask_user" | "skip",
   "response": "the text to type (only for type_text or send_instruction actions, otherwise empty string)",
   "confidence": 0.0 to 1.0
 }
 
-Rules:
-- If Claude is asking a yes/no question about proceeding, use "press_yes"
-- If Claude is asking for permission or confirmation, use "press_yes"
-- If Claude hit an error and is stuck, use "send_instruction" to tell it to try a different approach — suggest a solution, do NOT tell it to execute blindly
-- If Claude is asking which option to choose, use "type_text" with the most reasonable default
-- If Claude is waiting for user input/prompt, use "send_instruction" to tell it to continue with the current task
-- If the output looks like Claude is still actively working (streaming, thinking), use "skip"
-- If you cannot determine what's happening, use "skip"
-- If confidence is below 0.4, use "skip"
-- Never send passwords, secrets, or destructive commands
-- For send_instruction: always instruct Claude to FIND and SUGGEST solutions, not execute directly`;
+Rules for choosing action:
+- "press_yes" — Claude is asking a routine yes/no permission question where Yes is the obviously safe answer (e.g. "Allow me to read this file?", "Continue?", standard confirmations).
+- "press_no" — Claude is asking a yes/no where No is clearly right (e.g. "Proceed with a destructive action?").
+- "press_enter" — Claude is waiting for an acknowledgement / any-key-to-continue.
+- "type_text" — Claude is asking which of several option values to pick and a safe default is obvious. Put the default in "response".
+- "send_instruction" — Claude hit an error, is confused, or needs to be nudged back to the task. Put a short guiding instruction in "response". Always tell it to find and suggest solutions, not execute blindly.
+- "ask_user" — IMPORTANT. Use this when Claude is asking something that only the human user can decide: a design choice, a product decision, a name/value the AI cannot guess safely, a destructive action, a credential or personal preference, or anything ambiguous. Put the restated question in "question" so the user UI can display it clearly. Do NOT type anything into the terminal — just flag it.
+- "skip" — Claude looks like it is still thinking/streaming, or you cannot tell what's happening, or your confidence is below 0.4.
+
+Safety:
+- Never send passwords, secrets, credentials, or destructive shell commands.
+- When in doubt between an automated response and ask_user, prefer ask_user — it is always safer to escalate to the human.`;
 
 function buildStallUserMessage(recentOutput) {
   return `Claude Code has been idle with no output for ${STALL_TIMEOUT_MS / 1000} seconds. Here is the last terminal output:\n\n${recentOutput}`;
@@ -435,6 +441,31 @@ function executeStallResponse(ptyProcess, task, analysis) {
         ptyProcess.write(analysis.response + '\r');
       }
       break;
+    case 'ask_user':
+      // Don't touch the PTY — escalate to the human via status + WS event.
+      task.status = 'awaiting_user';
+      task.awaitingSituation = analysis.situation || '';
+      task.awaitingQuestion = analysis.question || analysis.situation || '';
+      console.log(`[Task ${task.id}] Awaiting user input — ${task.awaitingQuestion}`);
+      broadcast(task, {
+        type: 'awaiting_user',
+        taskId: task.id,
+        boardId: task.boardId || null,
+        situation: task.awaitingSituation,
+        question: task.awaitingQuestion,
+      });
+      notifyStatusChange(task);
+      // Record in stall history so the frontend task detail shows it too.
+      if (!task.stallResponses) task.stallResponses = [];
+      task.stallResponses.push({
+        timestamp: new Date().toISOString(),
+        situation: analysis.situation,
+        question: analysis.question || null,
+        action: 'ask_user',
+        response: null,
+        confidence: analysis.confidence,
+      });
+      return;
     case 'skip':
     default:
       return;
@@ -791,6 +822,13 @@ function runTask(task) {
 
   function triggerExit() {
     if (exitSent) return;
+    // Tasks awaiting user input must never auto-exit — the user is mid-
+    // conversation with Claude. The frontend will route their reply back
+    // through the PTY and completion detection will re-arm later.
+    if (task.status === 'awaiting_user') {
+      console.log(`[Task ${task.id}] Skipping exit — task is awaiting user input`);
+      return;
+    }
     // Loop-mode tasks never exit automatically — they stay in the 'loop'
     // state after going idle so the user can keep sending follow-ups over
     // the WebSocket. Only an explicit stop or the PTY dying terminates them.
@@ -909,9 +947,10 @@ function runTask(task) {
       } else {
         // Claude was working — look for the ❯ idle prompt returning
         if (/❯/.test(cleanPost)) {
-          // Debounce: if no new output for 4 seconds after seeing ❯, consider done
+          // Debounce: if no new output for 4 seconds after seeing ❯, run the
+          // pre-exit idle check instead of exiting immediately.
           if (completionTimer) clearTimeout(completionTimer);
-          completionTimer = setTimeout(() => triggerExit(), 4000);
+          completionTimer = setTimeout(() => maybeExitAfterIdle(), 4000);
         } else {
           // Still receiving output — reset to avoid premature trigger
           if (completionTimer) { clearTimeout(completionTimer); completionTimer = null; }
@@ -920,6 +959,51 @@ function runTask(task) {
       }
     }
   });
+
+  // Pre-exit idle check: called when the completion detector thinks the task
+  // is done. Before actually firing `/exit` we ask the stall analyzer whether
+  // Claude might be waiting on the user. If yes → ask_user (notify frontend,
+  // keep session alive). If it's an actionable prompt → auto-answer. Only if
+  // the analyzer explicitly says it's done (or is unavailable) do we exit.
+  let idleCheckInFlight = false;
+  async function maybeExitAfterIdle() {
+    if (exitSent || idleCheckInFlight || task.status === 'awaiting_user') return;
+
+    // If no analyzer configured, keep the legacy fast-exit behaviour.
+    if (STALL_ANALYSIS_PROVIDER === 'none') {
+      triggerExit();
+      return;
+    }
+
+    idleCheckInFlight = true;
+    try {
+      console.log(`[Task ${task.id}] Idle detected — running pre-exit check`);
+      const recentRaw = task.output.slice(-(STALL_CONTEXT_CHARS * 2));
+      const recentClean = stripAnsi(recentRaw).slice(-STALL_CONTEXT_CHARS);
+      const analysis = await analyzeStall(task.id, recentClean);
+
+      // Bail out if the task was torn down during the API call
+      if (exitSent || task.status === 'awaiting_user') return;
+
+      if (!analysis || analysis.action === 'skip') {
+        console.log(`[Task ${task.id}] Pre-exit: no pending question — exiting`);
+        triggerExit();
+        return;
+      }
+
+      // Actionable: auto-answer or escalate to user
+      executeStallResponse(ptyProcess, task, analysis);
+
+      // If we escalated, stop the completion loop entirely — the user will
+      // either respond via xterm or stop the task. If we auto-answered, give
+      // Claude another debounce window before re-checking.
+      if (task.status === 'awaiting_user') return;
+      if (completionTimer) clearTimeout(completionTimer);
+      completionTimer = setTimeout(() => maybeExitAfterIdle(), STALL_TIMEOUT_MS);
+    } finally {
+      idleCheckInFlight = false;
+    }
+  }
 
   ptyProcess.onExit(({ exitCode }) => {
     if (completionTimer) clearTimeout(completionTimer);
@@ -1003,6 +1087,101 @@ app.delete('/api/models/:id', (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Model not found' });
   availableModels.splice(idx, 1);
   res.json({ success: true });
+});
+
+// ─── Filesystem browser API ─────────────────────────────────────
+// These endpoints let the Settings dialog in the web UI browse real
+// directories on this host and create new ones (mkdir -p). The runner
+// already has full FS access on this machine — the APIs below just expose
+// a read-limited picker view to the browser.
+
+function resolveSafePath(input) {
+  if (typeof input !== 'string' || input.length === 0) {
+    throw new Error('path is required');
+  }
+  const expanded = input.startsWith('~/') || input === '~'
+    ? path.join(os.homedir(), input.slice(1).replace(/^\//, ''))
+    : input;
+  return path.resolve(expanded);
+}
+
+app.get('/api/fs/list', (req, res) => {
+  try {
+    const requested = typeof req.query.path === 'string' && req.query.path
+      ? req.query.path
+      : os.homedir();
+    const showHidden = req.query.hidden === '1' || req.query.hidden === 'true';
+    const target = resolveSafePath(requested);
+
+    if (!fs.existsSync(target)) {
+      return res.status(404).json({ error: 'Path does not exist', path: target });
+    }
+    const stat = fs.statSync(target);
+    if (!stat.isDirectory()) {
+      return res.status(400).json({ error: 'Not a directory', path: target });
+    }
+
+    const entries = [];
+    let items;
+    try {
+      items = fs.readdirSync(target, { withFileTypes: true });
+    } catch (err) {
+      return res.status(403).json({ error: `Cannot list: ${err.message}`, path: target });
+    }
+    for (const item of items) {
+      if (!showHidden && item.name.startsWith('.')) continue;
+      try {
+        const sub = path.join(target, item.name);
+        const s = fs.statSync(sub);
+        if (s.isDirectory()) {
+          entries.push({ name: item.name, isDir: true });
+        }
+      } catch { /* ignore per-entry permission errors */ }
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    const parent = path.dirname(target);
+    res.json({
+      path: target,
+      parent: parent !== target ? parent : null,
+      home: os.homedir(),
+      entries,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/fs/exists', (req, res) => {
+  try {
+    const target = resolveSafePath(req.query.path);
+    const exists = fs.existsSync(target);
+    const isDir = exists && fs.statSync(target).isDirectory();
+    res.json({ path: target, exists, isDir });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/fs/mkdir', (req, res) => {
+  try {
+    const target = resolveSafePath(req.body && req.body.path);
+    // Only allow mkdir under the user's home directory. Anywhere else is an
+    // easy way for a rogue script to spam folders across the filesystem.
+    const home = os.homedir();
+    const homeWithSep = home.endsWith(path.sep) ? home : home + path.sep;
+    if (target !== home && !target.startsWith(homeWithSep)) {
+      return res.status(403).json({
+        error: `For safety, new folders can only be created under your home directory (${home})`,
+        path: target,
+        home,
+      });
+    }
+    fs.mkdirSync(target, { recursive: true });
+    res.json({ path: target, created: true, exists: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── REST API ──────────────────────────────────────────────────
@@ -1106,6 +1285,15 @@ wss.on('connection', (ws) => {
 
       // Allow sending keyboard input to the terminal from the browser
       if (msg.type === 'input' && subscribedTask && subscribedTask.ptyProcess) {
+        // If the task was waiting for the user, flip it back to running the
+        // moment a keystroke arrives — the user is answering Claude's question.
+        if (subscribedTask.status === 'awaiting_user') {
+          subscribedTask.status = 'running';
+          subscribedTask.awaitingSituation = null;
+          subscribedTask.awaitingQuestion = null;
+          console.log(`[Task ${subscribedTask.id}] User resumed from awaiting_user`);
+          notifyStatusChange(subscribedTask);
+        }
         subscribedTask.ptyProcess.write(msg.data);
       }
 

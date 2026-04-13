@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X, Plus, Square, Trash2, RotateCw, Terminal, ChevronDown, ChevronRight,
-  Loader2, CircleCheck, CircleX, Clock, Play, Send, Maximize2, Minimize2,
+  Loader2, CircleCheck, CircleX, Clock, Play, Maximize2, Minimize2,
   FolderOpen, Wifi, WifiOff, Cpu
 } from 'lucide-react';
 import {
   listRunnerTasks, getRunnerTask, createRunnerTask, stopRunnerTask,
-  deleteRunnerTask, connectRunnerWs, stripAnsi, listModels,
+  deleteRunnerTask, connectRunnerWs, listModels,
   type RunnerTask, type RunnerTaskSummary, type RunnerWebSocket, type WsMessage, type RunnerModel
 } from '../../services/claudeRunner';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUIStore } from '../../stores/uiStore';
+import XtermTerminal, { XtermTerminalHandle } from './XtermTerminal';
 import './claude-task-manager.css';
 
 interface ClaudeTaskManagerProps {
@@ -21,10 +22,12 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
   const WORKING_DIR = useSettingsStore(s => s.workingDir);
   const globalModel = useSettingsStore(s => s.selectedModel);
   const activeBoardId = useUIStore(s => s.activeBoardId);
+  const runnerFocusTaskId = useUIStore(s => s.runnerFocusTaskId);
+  const setRunnerFocusTaskId = useUIStore(s => s.setRunnerFocusTaskId);
+  const clearAwaitingUser = useUIStore(s => s.clearAwaitingUser);
   const [tasks, setTasks] = useState<RunnerTaskSummary[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<RunnerTask | null>(null);
-  const [terminalOutput, setTerminalOutput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [showNewTask, setShowNewTask] = useState(false);
@@ -38,10 +41,9 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
   const [isCreating, setIsCreating] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
-  const [inputText, setInputText] = useState('');
 
   const wsRef = useRef<RunnerWebSocket | null>(null);
-  const terminalRef = useRef<HTMLPreElement>(null);
+  const xtermRef = useRef<XtermTerminalHandle | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch all tasks
@@ -67,6 +69,18 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
     };
   }, [fetchTasks]);
 
+  // Auto-focus a task that was opened from the awaiting-user toast.
+  useEffect(() => {
+    if (!runnerFocusTaskId) return;
+    selectTask(runnerFocusTaskId);
+    // The awaiting banner lingers until the user actually answers; we clear
+    // the focus id so re-opening the panel doesn't keep re-selecting the
+    // same task if the user has since picked a different one.
+    setRunnerFocusTaskId(null);
+    clearAwaitingUser(runnerFocusTaskId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerFocusTaskId]);
+
   // WebSocket connection
   useEffect(() => {
     const ws = connectRunnerWs();
@@ -74,13 +88,8 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
 
     ws.onMessage((msg: WsMessage) => {
       if (msg.type === 'output') {
-        setTerminalOutput(prev => prev + msg.data);
-        // Auto-scroll
-        requestAnimationFrame(() => {
-          if (terminalRef.current) {
-            terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-          }
-        });
+        // Pipe raw PTY bytes (ANSI and all) straight into xterm.js
+        xtermRef.current?.write(msg.data);
       } else if (msg.type === 'status') {
         // Refresh task list on status change
         fetchTasks();
@@ -109,18 +118,22 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
   // Select a task
   const selectTask = useCallback(async (taskId: string) => {
     setSelectedTaskId(taskId);
-    setTerminalOutput('');
+    // Reset the xterm buffer to the current task's backlog. The terminal
+    // component also resets when `sessionKey` changes, but doing it here
+    // makes the swap feel instant.
+    xtermRef.current?.clear();
     try {
       const task = await getRunnerTask(taskId);
       setSelectedTask(task);
-      setTerminalOutput(task.output || '');
+      if (task.output) xtermRef.current?.write(task.output);
       // Subscribe via WebSocket for live updates
       wsRef.current?.subscribe(taskId);
-      requestAnimationFrame(() => {
-        if (terminalRef.current) {
-          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-        }
-      });
+      // Send current terminal size so the PTY can match
+      setTimeout(() => {
+        const size = xtermRef.current?.getSize();
+        if (size) wsRef.current?.resize(size.cols, size.rows);
+        xtermRef.current?.focus();
+      }, 150);
     } catch (e) {
       setError(`Failed to load task: ${String(e)}`);
     }
@@ -181,12 +194,15 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
     }
   };
 
-  // Send input to terminal
-  const handleSendInput = () => {
-    if (!inputText) return;
-    wsRef.current?.sendInput(inputText + '\n');
-    setInputText('');
-  };
+  // Forward every keystroke typed into xterm straight to the PTY.
+  const handleTerminalData = useCallback((data: string) => {
+    wsRef.current?.sendInput(data);
+  }, []);
+
+  // Forward terminal resize events to the PTY so line wrapping stays correct.
+  const handleTerminalResize = useCallback((cols: number, rows: number) => {
+    wsRef.current?.resize(cols, rows);
+  }, []);
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -218,8 +234,6 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
     if (!dateStr) return '-';
     return new Date(dateStr).toLocaleString();
   };
-
-  const cleanOutput = stripAnsi(terminalOutput);
 
   return (
     <div className={`ctm-backdrop ${isFullscreen ? 'ctm-backdrop--fullscreen' : ''}`} onClick={onClose}>
@@ -401,22 +415,20 @@ const ClaudeTaskManager: React.FC<ClaudeTaskManagerProps> = ({ onClose }) => {
                     </div>
                   )}
                 </div>
-                <pre className="ctm-terminal" ref={terminalRef}>
-                  {cleanOutput || 'Waiting for output...'}
-                </pre>
-                {/* Input bar for running tasks */}
-                {(selectedTask.status === 'running' || selectedTask.status === 'queued') && (
-                  <div className="ctm-terminal-input">
-                    <input
-                      type="text"
-                      placeholder="Send input to terminal..."
-                      value={inputText}
-                      onChange={e => setInputText(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handleSendInput()}
-                    />
-                    <button className="ctm-btn ctm-btn--primary ctm-btn--sm" onClick={handleSendInput}>
-                      <Send size={14} />
-                    </button>
+                <div className="ctm-terminal-wrap">
+                  <XtermTerminal
+                    ref={xtermRef}
+                    className="ctm-terminal-xterm"
+                    sessionKey={selectedTaskId}
+                    onData={handleTerminalData}
+                    onResize={handleTerminalResize}
+                    readOnly={['completed', 'failed', 'stopped'].includes(selectedTask.status)}
+                  />
+                </div>
+                {/* Stop button — typing now happens directly inside the terminal */}
+                {(selectedTask.status === 'running' || selectedTask.status === 'queued' || selectedTask.status === 'loop') && (
+                  <div className="ctm-terminal-actions">
+                    <span className="ctm-terminal-hint">Click the terminal and type — keystrokes go straight to the PTY.</span>
                     <button
                       className="ctm-btn ctm-btn--danger ctm-btn--sm"
                       onClick={() => handleStopTask(selectedTask.id)}

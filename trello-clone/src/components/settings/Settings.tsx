@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { X, FolderOpen, Save, Cpu, RefreshCw, Loader2, Zap, Plus, Trash2 } from 'lucide-react';
+import { X, FolderOpen, Save, Cpu, RefreshCw, Loader2, Zap, Plus, Trash2, FolderPlus, Folder } from 'lucide-react';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useBoardStore } from '../../stores/boardStore';
 import { useUIStore } from '../../stores/uiStore';
-import { listModels, type RunnerModel } from '../../services/claudeRunner';
+import { listModels, fsExists, fsMkdir, type RunnerModel } from '../../services/claudeRunner';
 import { Shortcut } from '../../types';
 import { newShortcut } from '../../lib/shortcuts';
+import DirectoryPicker from './DirectoryPicker';
 import './settings.css';
 
 interface SettingsProps {
@@ -28,6 +29,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
 
   const [dirValue, setDirValue] = useState(workingDir);
   const [dirSaved, setDirSaved] = useState(false);
+  const [dirCheckState, setDirCheckState] = useState<'idle' | 'checking' | 'missing' | 'creating' | 'error'>('idle');
+  const [dirCheckError, setDirCheckError] = useState('');
+  const [showPicker, setShowPicker] = useState(false);
   const [models, setModels] = useState<RunnerModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
@@ -66,10 +70,48 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     fetchModels();
   }, []);
 
-  const handleSaveDir = () => {
-    setWorkingDir(dirValue.trim());
+  const persistDir = (path: string) => {
+    setWorkingDir(path);
+    setDirValue(path);
     setDirSaved(true);
+    setDirCheckState('idle');
+    setDirCheckError('');
     setTimeout(() => setDirSaved(false), 2000);
+  };
+
+  const handleSaveDir = async () => {
+    const trimmed = dirValue.trim();
+    if (!trimmed) return;
+    setDirCheckState('checking');
+    setDirCheckError('');
+    try {
+      const result = await fsExists(trimmed);
+      if (result.exists && result.isDir) {
+        persistDir(result.path);
+      } else if (result.exists && !result.isDir) {
+        setDirCheckState('error');
+        setDirCheckError('That path exists but is a file, not a folder.');
+      } else {
+        setDirCheckState('missing');
+      }
+    } catch (err) {
+      setDirCheckState('error');
+      setDirCheckError(String(err instanceof Error ? err.message : err));
+    }
+  };
+
+  const handleCreateMissingDir = async () => {
+    const trimmed = dirValue.trim();
+    if (!trimmed) return;
+    setDirCheckState('creating');
+    setDirCheckError('');
+    try {
+      const result = await fsMkdir(trimmed);
+      persistDir(result.path);
+    } catch (err) {
+      setDirCheckState('error');
+      setDirCheckError(String(err instanceof Error ? err.message : err));
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -104,19 +146,50 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                 className="settings-input"
                 placeholder="/path/to/your/project"
                 value={dirValue}
-                onChange={e => setDirValue(e.target.value)}
+                onChange={e => { setDirValue(e.target.value); setDirCheckState('idle'); }}
                 onKeyDown={handleKeyDown}
               />
               <button
+                className="settings-save-btn settings-save-btn--secondary"
+                onClick={() => setShowPicker(true)}
+                title="Browse folders on this Mac"
+              >
+                <Folder size={14} />
+                Browse
+              </button>
+              <button
                 className="settings-save-btn"
                 onClick={handleSaveDir}
-                disabled={dirValue.trim() === workingDir}
+                disabled={!dirValue.trim() || dirCheckState === 'checking' || dirCheckState === 'creating'}
               >
-                <Save size={14} />
+                {dirCheckState === 'checking' ? <Loader2 size={14} className="settings-spin" /> : <Save size={14} />}
                 {dirSaved ? 'Saved!' : 'Save'}
               </button>
             </div>
-            {workingDir && (
+            {dirCheckState === 'missing' && (
+              <div className="settings-dir-missing">
+                <span>
+                  Folder <code>{dirValue.trim()}</code> doesn't exist yet.
+                </span>
+                <button
+                  className="settings-save-btn settings-save-btn--accent"
+                  onClick={handleCreateMissingDir}
+                  disabled={false}
+                >
+                  <FolderPlus size={13} />
+                  Create it
+                </button>
+              </div>
+            )}
+            {dirCheckState === 'creating' && (
+              <p className="settings-hint">
+                <Loader2 size={12} className="settings-spin" /> Creating folder…
+              </p>
+            )}
+            {dirCheckState === 'error' && dirCheckError && (
+              <p className="settings-error">{dirCheckError}</p>
+            )}
+            {workingDir && dirCheckState !== 'missing' && dirCheckState !== 'error' && (
               <p className="settings-current">
                 Current: <code>{workingDir}</code>
               </p>
@@ -235,6 +308,21 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
           )}
         </div>
       </div>
+      {showPicker && (
+        <DirectoryPicker
+          initialPath={dirValue || workingDir || undefined}
+          onSelect={(p) => {
+            setDirValue(p);
+            setWorkingDir(p);
+            setDirCheckState('idle');
+            setDirCheckError('');
+            setDirSaved(true);
+            setTimeout(() => setDirSaved(false), 2000);
+            setShowPicker(false);
+          }}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
     </div>
   );
 };
