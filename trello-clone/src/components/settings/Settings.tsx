@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { X, FolderOpen, Save, Cpu, RefreshCw, Loader2, Zap, Plus, Trash2, FolderPlus, Folder } from 'lucide-react';
+import { X, FolderOpen, Save, Cpu, RefreshCw, Loader2, Zap, Plus, Trash2, FolderPlus, Folder, ClipboardList, Sparkles } from 'lucide-react';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useBoardStore } from '../../stores/boardStore';
 import { useUIStore } from '../../stores/uiStore';
 import { listModels, fsExists, fsMkdir, type RunnerModel } from '../../services/claudeRunner';
-import { Shortcut } from '../../types';
+import { generateTaskTemplate } from '../../services/ai';
+import { Shortcut, TaskTemplate } from '../../types';
 import { newShortcut } from '../../lib/shortcuts';
+import { newTaskTemplate } from '../../lib/taskTemplates';
 import DirectoryPicker from './DirectoryPicker';
 import './settings.css';
 
@@ -22,6 +24,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
   const addGlobalShortcut = useSettingsStore(s => s.addGlobalShortcut);
   const updateGlobalShortcut = useSettingsStore(s => s.updateGlobalShortcut);
   const removeGlobalShortcut = useSettingsStore(s => s.removeGlobalShortcut);
+  const globalTaskTemplates = useSettingsStore(s => s.globalTaskTemplates);
+  const addGlobalTaskTemplate = useSettingsStore(s => s.addGlobalTaskTemplate);
+  const updateGlobalTaskTemplate = useSettingsStore(s => s.updateGlobalTaskTemplate);
+  const removeGlobalTaskTemplate = useSettingsStore(s => s.removeGlobalTaskTemplate);
 
   const activeBoardId = useUIStore(s => s.activeBoardId);
   const activeBoard = useBoardStore(s => (activeBoardId ? s.boards[activeBoardId] : undefined));
@@ -51,6 +57,23 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
   const removeBoardShortcut = (id: string) => {
     if (!activeBoard) return;
     updateBoard(activeBoard.id, { shortcuts: boardShortcuts.filter((s) => s.id !== id) });
+  };
+
+  // Task template CRUD helpers — global + board-scoped
+  const boardTaskTemplates = activeBoard?.taskTemplates ?? [];
+  const addBoardTaskTemplate = (template: TaskTemplate) => {
+    if (!activeBoard) return;
+    updateBoard(activeBoard.id, { taskTemplates: [...boardTaskTemplates, template] });
+  };
+  const updateBoardTaskTemplate = (id: string, patch: Partial<TaskTemplate>) => {
+    if (!activeBoard) return;
+    updateBoard(activeBoard.id, {
+      taskTemplates: boardTaskTemplates.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    });
+  };
+  const removeBoardTaskTemplate = (id: string) => {
+    if (!activeBoard) return;
+    updateBoard(activeBoard.id, { taskTemplates: boardTaskTemplates.filter((t) => t.id !== id) });
   };
 
   const fetchModels = async () => {
@@ -306,6 +329,60 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
               />
             </div>
           )}
+
+          {/* Global Task Templates */}
+          <div className="settings-section">
+            <label className="settings-label">
+              <ClipboardList size={14} />
+              <span>Global Task Templates</span>
+              <button
+                className="settings-refresh-btn"
+                onClick={() => addGlobalTaskTemplate(newTaskTemplate())}
+                title="Add template"
+                style={{ marginLeft: 'auto' }}
+              >
+                <Plus size={12} />
+              </button>
+            </label>
+            <p className="settings-hint">
+              Reusable task-card blueprints. Open the AI Assistant's <strong>Template</strong> tab on any board to pick one (or many) and spawn cards in one click.
+            </p>
+            <TaskTemplateList
+              templates={globalTaskTemplates}
+              onAdd={addGlobalTaskTemplate}
+              onUpdate={updateGlobalTaskTemplate}
+              onRemove={removeGlobalTaskTemplate}
+              placeholder="No global templates yet — click + to add one or use AI Generate below."
+            />
+          </div>
+
+          {/* Board Task Templates — only when a board is currently open */}
+          {activeBoard && (
+            <div className="settings-section">
+              <label className="settings-label">
+                <ClipboardList size={14} />
+                <span>Board Task Templates — {activeBoard.title}</span>
+                <button
+                  className="settings-refresh-btn"
+                  onClick={() => addBoardTaskTemplate(newTaskTemplate())}
+                  title="Add template"
+                  style={{ marginLeft: 'auto' }}
+                >
+                  <Plus size={12} />
+                </button>
+              </label>
+              <p className="settings-hint">
+                Templates that only appear on this board. Same merge rule as shortcuts — board wins on id collision.
+              </p>
+              <TaskTemplateList
+                templates={boardTaskTemplates}
+                onAdd={addBoardTaskTemplate}
+                onUpdate={updateBoardTaskTemplate}
+                onRemove={removeBoardTaskTemplate}
+                placeholder="No board-specific templates yet — click + to add one."
+              />
+            </div>
+          )}
         </div>
       </div>
       {showPicker && (
@@ -406,6 +483,158 @@ const ShortcutList: React.FC<ShortcutListProps> = ({ shortcuts, models, onUpdate
           </div>
         </div>
       ))}
+    </div>
+  );
+};
+
+// ─── Task template editor list ──────────────────────────────────────────────
+interface TaskTemplateListProps {
+  templates: TaskTemplate[];
+  onAdd: (template: TaskTemplate) => void;
+  onUpdate: (id: string, patch: Partial<TaskTemplate>) => void;
+  onRemove: (id: string) => void;
+  placeholder: string;
+}
+
+const TaskTemplateList: React.FC<TaskTemplateListProps> = ({ templates, onAdd, onUpdate, onRemove, placeholder }) => {
+  const [genPrompt, setGenPrompt] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState('');
+  const [showGen, setShowGen] = useState(false);
+
+  const handleGenerate = async () => {
+    if (!genPrompt.trim()) return;
+    setGenerating(true);
+    setGenError('');
+    try {
+      const draft = await generateTaskTemplate(genPrompt.trim());
+      const fresh = newTaskTemplate();
+      onAdd({
+        ...fresh,
+        name: draft.name,
+        icon: draft.icon,
+        cardTitle: draft.cardTitle,
+        description: draft.description,
+        checklist: draft.checklist,
+        priority: draft.priority,
+      });
+      setGenPrompt('');
+      setShowGen(false);
+    } catch (err) {
+      setGenError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <div className="tt-list">
+      {templates.length === 0 ? (
+        <p className="settings-hint" style={{ opacity: 0.6 }}>{placeholder}</p>
+      ) : (
+        templates.map((t) => (
+          <div key={t.id} className="tt-row">
+            <div className="tt-row-header">
+              <input
+                type="text"
+                className="settings-input tt-name"
+                placeholder="Template name (e.g. Bug triage)"
+                value={t.name}
+                onChange={(e) => onUpdate(t.id, { name: e.target.value })}
+              />
+              <input
+                type="text"
+                className="settings-input tt-icon"
+                placeholder="📋"
+                value={t.icon || ''}
+                onChange={(e) => onUpdate(t.id, { icon: e.target.value })}
+                maxLength={4}
+              />
+              <select
+                className="settings-select tt-priority"
+                value={t.priority || ''}
+                onChange={(e) => onUpdate(t.id, { priority: (e.target.value || undefined) as TaskTemplate['priority'] })}
+              >
+                <option value="">Priority: —</option>
+                <option value="critical">critical</option>
+                <option value="high">high</option>
+                <option value="medium">medium</option>
+                <option value="low">low</option>
+              </select>
+              <button
+                className="shortcut-remove"
+                onClick={() => onRemove(t.id)}
+                title="Remove template"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <input
+              type="text"
+              className="settings-input tt-cardtitle"
+              placeholder="Default card title"
+              value={t.cardTitle}
+              onChange={(e) => onUpdate(t.id, { cardTitle: e.target.value })}
+            />
+            <textarea
+              className="settings-input tt-description"
+              placeholder="Description (markdown). Explain how to do this task and include an example."
+              value={t.description}
+              onChange={(e) => onUpdate(t.id, { description: e.target.value })}
+              rows={5}
+            />
+            <textarea
+              className="settings-input tt-checklist"
+              placeholder="Checklist items — one per line"
+              value={(t.checklist || []).join('\n')}
+              onChange={(e) => onUpdate(t.id, { checklist: e.target.value.split('\n').map((s) => s).filter((s) => s.trim().length > 0 || s === '') })}
+              rows={4}
+            />
+          </div>
+        ))
+      )}
+
+      {/* AI generate sub-form */}
+      {showGen ? (
+        <div className="tt-gen-box">
+          <label className="settings-label">
+            <Sparkles size={12} />
+            <span>Describe the template for the AI</span>
+          </label>
+          <textarea
+            className="settings-input tt-description"
+            rows={3}
+            placeholder="e.g. A template for debugging a flaky test — include how to reproduce, isolate, and fix."
+            value={genPrompt}
+            onChange={(e) => setGenPrompt(e.target.value)}
+          />
+          {genError && <p className="settings-error">{genError}</p>}
+          <div className="tt-gen-actions">
+            <button
+              className="settings-save-btn settings-save-btn--accent"
+              onClick={handleGenerate}
+              disabled={!genPrompt.trim() || generating}
+            >
+              {generating ? <Loader2 size={12} className="settings-spin" /> : <Sparkles size={12} />}
+              Generate
+            </button>
+            <button
+              className="settings-save-btn settings-save-btn--secondary"
+              onClick={() => { setShowGen(false); setGenError(''); setGenPrompt(''); }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className="settings-save-btn settings-save-btn--accent tt-gen-toggle"
+          onClick={() => setShowGen(true)}
+        >
+          <Sparkles size={12} />
+          AI Generate template
+        </button>
+      )}
     </div>
   );
 };

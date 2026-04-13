@@ -1,15 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Bot, Loader2, CheckCircle2, AlertCircle, Terminal, ImagePlus, Cpu, ChevronDown, CalendarClock, ListTodo, MessageCircle, Clock, Mic, MicOff, Volume2, VolumeX, LayoutList, FileText, Lightbulb, FilePlus2, Zap } from 'lucide-react';
+import { X, Send, Bot, Loader2, CheckCircle2, AlertCircle, Terminal, ImagePlus, Cpu, ChevronDown, CalendarClock, ListTodo, MessageCircle, Clock, Mic, MicOff, Volume2, VolumeX, LayoutList, FileText, Lightbulb, FilePlus2, Zap, ClipboardList, MoreHorizontal } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { Board } from '../../types';
 import { useBoardStore } from '../../stores/boardStore';
-import { analyzeRequirements, generateCardFromDescription, chatWithImage, freeChat, voiceChat, ideationChat, summarizeIdeasForTask } from '../../services/ai';
+import { analyzeRequirements, generateCardFromDescription, chatWithImage, freeChat, voiceChat, ideationChat, summarizeIdeasForTask, generateCardFromTemplate } from '../../services/ai';
 import { createRunnerTask, listModels, type RunnerModel } from '../../services/claudeRunner';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getEffectiveShortcuts, EffectiveShortcut } from '../../lib/shortcuts';
+import { getEffectiveTaskTemplates, EffectiveTaskTemplate } from '../../lib/taskTemplates';
 import './ai-assistant.css';
 
-type ChatMode = 'schedule' | 'plan' | 'chat' | 'ideas' | 'shortcut' | 'voice';
+type ChatMode = 'schedule' | 'plan' | 'chat' | 'ideas' | 'shortcut' | 'template' | 'voice';
 
 interface Message {
   id: string;
@@ -57,6 +58,12 @@ const MODE_CONFIG: Record<ChatMode, { icon: React.ReactNode; label: string; plac
     placeholder: 'Click a shortcut below to fire it into Claude Code Runner.',
     color: '#C377E0',
   },
+  template: {
+    icon: <ClipboardList size={13} />,
+    label: 'Template',
+    placeholder: 'Pick templates, then chat about your project — the AI will merge each template with this context when you Create.',
+    color: '#0079BF',
+  },
   voice: {
     icon: <Mic size={13} />,
     label: 'Voice',
@@ -89,6 +96,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
   const [scheduleTime, setScheduleTime] = useState(getDefaultScheduleTime);
   const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
   const [ideasHistory, setIdeasHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [templateChatHistory, setTemplateChatHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
   const [isCreatingIdeaCard, setIsCreatingIdeaCard] = useState(false);
   const [voiceHistory, setVoiceHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -98,6 +106,47 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // Overflow UI for the mode tab strip — horizontal scroll + "More" popover
+  const modeStripRef = useRef<HTMLDivElement>(null);
+  const [showModeOverflow, setShowModeOverflow] = useState(false);
+  const [modeStripOverflow, setModeStripOverflow] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+
+  // Convert vertical mouse-wheel / trackpad input into horizontal scroll on
+  // the mode tab strip so users can spin their wheel over the tabs and see
+  // every mode even when the panel is narrow. Also track whether there's
+  // clipped content on either side so the UI can show scroll affordances.
+  useEffect(() => {
+    const el = modeStripRef.current;
+    if (!el) return;
+
+    const updateOverflow = () => {
+      const left = el.scrollLeft > 2;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+      setModeStripOverflow(prev => (prev.left === left && prev.right === right ? prev : { left, right }));
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      // Only hijack the wheel when the user's vertical intent is stronger
+      // than horizontal; native horizontal swipes (deltaX) are left alone.
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        el.scrollLeft += e.deltaY;
+        e.preventDefault();
+        updateOverflow();
+      }
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('scroll', updateOverflow, { passive: true });
+    updateOverflow();
+    const ro = new ResizeObserver(updateOverflow);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('scroll', updateOverflow);
+      ro.disconnect();
+    };
+  }, []);
 
   const lists = useBoardStore(s => s.lists);
   const createCard = useBoardStore(s => s.createCard);
@@ -106,6 +155,19 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
   const globalShortcuts = useSettingsStore(s => s.globalShortcuts);
   const effectiveShortcuts: EffectiveShortcut[] = getEffectiveShortcuts(board, globalShortcuts);
   const [runningShortcutId, setRunningShortcutId] = useState<string | null>(null);
+
+  const globalTaskTemplates = useSettingsStore(s => s.globalTaskTemplates);
+  const effectiveTaskTemplates: EffectiveTaskTemplate[] = getEffectiveTaskTemplates(board, globalTaskTemplates);
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<Set<string>>(new Set());
+  const [creatingTemplates, setCreatingTemplates] = useState(false);
+
+  const toggleTemplate = (id: string) => {
+    setSelectedTemplateIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   const addChecklistItem = useBoardStore(s => s.addChecklistItem);
   const createLabel = useBoardStore(s => s.createLabel);
 
@@ -521,6 +583,137 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ board, onClose }) => {
     }
   };
 
+  // ─── Mode: Template — free chat that accumulates project context ───
+  // Messages typed while Template mode is active go into a dedicated history
+  // so switching to Chat / Ideas / etc. doesn't pollute the merge context.
+  const handleTemplateChat = async () => {
+    if (!input.trim() || isLoading) return;
+    const text = input.trim();
+    const userMessage: Message = { id: uuidv4(), role: 'user', content: text };
+    const loadingId = uuidv4();
+    setMessages(prev => [...prev, userMessage, { id: loadingId, role: 'assistant', content: '', isLoading: true }]);
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      const onChunk = (partial: string) => {
+        setMessages(prev => prev.map(m =>
+          m.id === loadingId ? { ...m, content: partial, isLoading: true } : m
+        ));
+      };
+      // Reuse freeChat but seed a system-ish hint via the first message.
+      const result = await freeChat(text, templateChatHistory, onChunk);
+      setTemplateChatHistory(prev => [...prev, { role: 'user', content: text }, { role: 'assistant', content: result }]);
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(), role: 'assistant', content: result,
+      }));
+    } catch (e) {
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(), role: 'assistant', content: `Error: ${String(e)}`, isError: true,
+      }));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // ─── Mode: Template (multi-select spawner) ───
+  // Turn each selected template into a fresh card on the board's To Do list.
+  // Priority, description, and checklist are copied over; the user can edit
+  // afterwards like any other card.
+  const handleCreateTemplateCards = async () => {
+    if (creatingTemplates || selectedTemplateIds.size === 0) return;
+    setCreatingTemplates(true);
+
+    const hasContext = templateChatHistory.length > 0;
+    const loadingId = uuidv4();
+    setMessages(prev => [...prev, {
+      id: loadingId,
+      role: 'assistant',
+      content: hasContext
+        ? `Merging ${selectedTemplateIds.size} template${selectedTemplateIds.size > 1 ? 's' : ''} with your chat context…`
+        : `Spawning ${selectedTemplateIds.size} card${selectedTemplateIds.size > 1 ? 's' : ''} from templates…`,
+      isLoading: true,
+    }]);
+
+    try {
+      const boardLists = board.listIds.map(id => lists[id]).filter(Boolean);
+      const todoList = boardLists.find(l => /to\s*do|todo|backlog/i.test(l.title)) || boardLists[0];
+      if (!todoList) throw new Error('No lists on this board — create one first.');
+
+      const created: string[] = [];
+      const picked = effectiveTaskTemplates.filter(t => selectedTemplateIds.has(t.id));
+
+      for (const tpl of picked) {
+        // Decide the card content: merge with chat context when available, else raw template.
+        let cardTitle: string;
+        let cardDesc: string;
+        let cardChecklist: string[];
+
+        if (hasContext) {
+          try {
+            const merged = await generateCardFromTemplate(
+              {
+                name: tpl.name,
+                cardTitle: tpl.cardTitle || tpl.name,
+                description: tpl.description || '',
+                checklist: tpl.checklist || [],
+                priority: tpl.priority,
+              },
+              templateChatHistory,
+            );
+            cardTitle = merged.title;
+            cardDesc = merged.description;
+            cardChecklist = merged.checklist;
+          } catch {
+            cardTitle = (tpl.cardTitle || tpl.name || 'Task').trim();
+            cardDesc = tpl.description || '';
+            cardChecklist = tpl.checklist || [];
+          }
+        } else {
+          cardTitle = (tpl.cardTitle || tpl.name || 'Task').trim();
+          cardDesc = tpl.description || '';
+          cardChecklist = tpl.checklist || [];
+        }
+
+        const card = createCard(todoList.id, board.id, cardTitle);
+        updateCard(card.id, {
+          description: cardDesc,
+          priority: tpl.priority,
+        });
+        if (cardChecklist.length > 0) {
+          addChecklist(card.id, 'Checklist');
+          const fresh = useBoardStore.getState().cards[card.id];
+          const checklist = fresh?.checklists[fresh.checklists.length - 1];
+          if (checklist) {
+            for (const item of cardChecklist.filter(s => s.trim().length > 0)) {
+              useBoardStore.getState().addChecklistItem(card.id, checklist.id, item);
+            }
+          }
+        }
+        created.push(cardTitle);
+      }
+
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(),
+        role: 'assistant',
+        content: hasContext
+          ? `Created ${created.length} customized card${created.length > 1 ? 's' : ''} in "${todoList.title}" (merged with ${templateChatHistory.length / 2} chat exchange${templateChatHistory.length / 2 !== 1 ? 's' : ''}).`
+          : `Created ${created.length} card${created.length > 1 ? 's' : ''} in "${todoList.title}".`,
+        createdCards: created,
+      }));
+      setSelectedTemplateIds(new Set());
+    } catch (e) {
+      setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
+        id: uuidv4(),
+        role: 'assistant',
+        content: `Failed to spawn cards: ${String(e)}`,
+        isError: true,
+      }));
+    } finally {
+      setCreatingTemplates(false);
+    }
+  };
+
   // ─── Mode: Shortcut (one-click runner commands) ───
   // Fires the shortcut's prompt straight at Claude Code Runner while still
   // creating a tracking card in the To Do list, mirroring the existing
@@ -717,6 +910,7 @@ ${markdown}`;
       case 'chat': return handleChat();
       case 'ideas': return handleIdeas();
       case 'shortcut': return; // shortcut mode has no text input — user clicks cards
+      case 'template': return handleTemplateChat();
       case 'voice': return handleVoice();
     }
   };
@@ -742,19 +936,72 @@ ${markdown}`;
         </button>
       </div>
 
-      {/* Mode Tabs */}
-      <div className="ai-mode-tabs">
-        {(Object.keys(MODE_CONFIG) as ChatMode[]).map(mode => (
+      {/* Mode Tabs — horizontally scrollable strip with an overflow picker */}
+      <div className={`ai-mode-tabs-wrap ${modeStripOverflow.left ? 'ai-mode-tabs-wrap--overflow-left' : ''} ${modeStripOverflow.right ? 'ai-mode-tabs-wrap--overflow-right' : ''}`}>
+        <div className="ai-mode-tabs" ref={modeStripRef}>
+          {(Object.keys(MODE_CONFIG) as ChatMode[]).map(mode => (
+            <button
+              key={mode}
+              data-mode={mode}
+              className={`ai-mode-tab ${chatMode === mode ? 'ai-mode-tab--active' : ''}`}
+              onClick={() => {
+                setChatMode(mode);
+                if (mode === 'schedule') setScheduleTime(getDefaultScheduleTime());
+                // Scroll the picked tab into view so the user can see the active state
+                requestAnimationFrame(() => {
+                  const el = modeStripRef.current?.querySelector(`[data-mode="${mode}"]`) as HTMLElement | null;
+                  el?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+                });
+              }}
+              style={chatMode === mode ? { borderColor: MODE_CONFIG[mode].color, color: MODE_CONFIG[mode].color } : {}}
+            >
+              {MODE_CONFIG[mode].icon}
+              <span>{MODE_CONFIG[mode].label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="ai-mode-more">
           <button
-            key={mode}
-            className={`ai-mode-tab ${chatMode === mode ? 'ai-mode-tab--active' : ''}`}
-            onClick={() => { setChatMode(mode); if (mode === 'schedule') setScheduleTime(getDefaultScheduleTime()); }}
-            style={chatMode === mode ? { borderColor: MODE_CONFIG[mode].color, color: MODE_CONFIG[mode].color } : {}}
+            className="ai-mode-more-btn"
+            onClick={() => setShowModeOverflow(v => !v)}
+            title="All modes"
+            aria-label="All modes"
           >
-            {MODE_CONFIG[mode].icon}
-            <span>{MODE_CONFIG[mode].label}</span>
+            <MoreHorizontal size={14} />
           </button>
-        ))}
+          {showModeOverflow && (
+            <>
+              <div className="ai-mode-more-backdrop" onClick={() => setShowModeOverflow(false)} />
+              <div className="ai-mode-more-popover">
+                <div className="ai-mode-more-title">Modes</div>
+                {(Object.keys(MODE_CONFIG) as ChatMode[]).map(mode => {
+                  const cfg = MODE_CONFIG[mode];
+                  const active = chatMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      className={`ai-mode-more-row ${active ? 'ai-mode-more-row--active' : ''}`}
+                      style={active ? { color: cfg.color } : {}}
+                      onClick={() => {
+                        setChatMode(mode);
+                        if (mode === 'schedule') setScheduleTime(getDefaultScheduleTime());
+                        setShowModeOverflow(false);
+                        requestAnimationFrame(() => {
+                          const el = modeStripRef.current?.querySelector(`[data-mode="${mode}"]`) as HTMLElement | null;
+                          el?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+                        });
+                      }}
+                    >
+                      <span className="ai-mode-more-row-icon" style={{ color: cfg.color }}>{cfg.icon}</span>
+                      <span className="ai-mode-more-row-label">{cfg.label}</span>
+                      {active && <CheckCircle2 size={12} />}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="ai-assistant-messages">
@@ -815,7 +1062,7 @@ ${markdown}`;
         )}
 
         {/* Model Picker (for modes that hit the runner, not the pure-chat modes) */}
-        {chatMode !== 'chat' && chatMode !== 'ideas' && chatMode !== 'shortcut' && (
+        {chatMode !== 'chat' && chatMode !== 'ideas' && chatMode !== 'shortcut' && chatMode !== 'template' && (
           <div className="ai-model-bar">
             <button
               className="ai-model-toggle"
@@ -855,6 +1102,77 @@ ${markdown}`;
             <button className="ai-image-preview-remove" onClick={() => setPendingImage(null)} title="Remove image">
               <X size={14} />
             </button>
+          </div>
+        )}
+
+        {/* Template mode — multi-select grid spawning cards */}
+        {chatMode === 'template' && (
+          <div className="ai-template-bar">
+            {effectiveTaskTemplates.length === 0 ? (
+              <p className="ai-shortcut-empty">
+                No templates yet — add some in Settings → Global Task Templates or Board Task Templates (or generate with AI).
+              </p>
+            ) : (
+              <>
+                <div className="ai-template-grid">
+                  {effectiveTaskTemplates.map(tpl => {
+                    const selected = selectedTemplateIds.has(tpl.id);
+                    return (
+                      <button
+                        key={tpl.id}
+                        className={`ai-template-card ai-template-card--${tpl.source} ${selected ? 'ai-template-card--selected' : ''}`}
+                        onClick={() => toggleTemplate(tpl.id)}
+                        disabled={creatingTemplates || !tpl.cardTitle.trim()}
+                        title={tpl.description ? tpl.description.slice(0, 300) : 'Empty template — fill it in Settings'}
+                      >
+                        <div className="ai-template-card-head">
+                          <span className="ai-template-card-icon">{tpl.icon || '📋'}</span>
+                          <span className="ai-template-card-name">{tpl.name || '(unnamed)'}</span>
+                          <span className="ai-template-card-check">{selected ? '✓' : ''}</span>
+                        </div>
+                        <div className="ai-template-card-title">{tpl.cardTitle || '(no card title)'}</div>
+                        <div className="ai-template-card-meta">
+                          <span className="ai-template-card-source">{tpl.source}</span>
+                          {(tpl.checklist?.length || 0) > 0 && (
+                            <span className="ai-template-card-checklist">{tpl.checklist!.length} steps</span>
+                          )}
+                          {tpl.priority && <span className={`ai-template-card-priority ai-template-card-priority--${tpl.priority}`}>{tpl.priority}</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="ai-template-actions">
+                  <span className="ai-template-count">
+                    {selectedTemplateIds.size} selected
+                    {templateChatHistory.length > 0 && (
+                      <span className="ai-template-context-pill" title="Chat messages in this session will be merged into each card">
+                        · {templateChatHistory.length / 2} chat exchange{templateChatHistory.length / 2 !== 1 ? 's' : ''} as context
+                      </span>
+                    )}
+                  </span>
+                  {templateChatHistory.length > 0 && (
+                    <button
+                      className="ai-template-clear-btn"
+                      onClick={() => setTemplateChatHistory([])}
+                      title="Clear chat context — next Create will use raw templates"
+                    >
+                      Clear context
+                    </button>
+                  )}
+                  <button
+                    className="ai-template-create-btn"
+                    onClick={handleCreateTemplateCards}
+                    disabled={selectedTemplateIds.size === 0 || creatingTemplates}
+                  >
+                    {creatingTemplates
+                      ? <><Loader2 size={13} className="ai-spin" /><span>{templateChatHistory.length > 0 ? 'Merging…' : 'Creating…'}</span></>
+                      : <><FilePlus2 size={13} /><span>Create {selectedTemplateIds.size || ''} card{selectedTemplateIds.size === 1 ? '' : 's'}</span></>
+                    }
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
 

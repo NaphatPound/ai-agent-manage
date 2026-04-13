@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Shortcut } from '../types';
+import { Shortcut, TaskTemplate } from '../types';
 
 const STORAGE_KEY = 'trello-settings';
 
@@ -7,6 +7,7 @@ interface PersistedSettings {
   workingDir: string;
   selectedModel: string;
   globalShortcuts: Shortcut[];
+  globalTaskTemplates: TaskTemplate[];
 }
 
 interface SettingsState extends PersistedSettings {
@@ -15,6 +16,9 @@ interface SettingsState extends PersistedSettings {
   addGlobalShortcut: (shortcut: Shortcut) => void;
   updateGlobalShortcut: (id: string, patch: Partial<Shortcut>) => void;
   removeGlobalShortcut: (id: string) => void;
+  addGlobalTaskTemplate: (template: TaskTemplate) => void;
+  updateGlobalTaskTemplate: (id: string, patch: Partial<TaskTemplate>) => void;
+  removeGlobalTaskTemplate: (id: string) => void;
 }
 
 function loadSettings(): PersistedSettings {
@@ -26,6 +30,7 @@ function loadSettings(): PersistedSettings {
         workingDir: parsed.workingDir ?? (import.meta.env.VITE_CLAUDE_RUNNER_WORKING_DIR || ''),
         selectedModel: parsed.selectedModel ?? '',
         globalShortcuts: Array.isArray(parsed.globalShortcuts) ? parsed.globalShortcuts : [],
+        globalTaskTemplates: Array.isArray(parsed.globalTaskTemplates) ? parsed.globalTaskTemplates : [],
       };
     }
   } catch { /* ignore */ }
@@ -33,6 +38,7 @@ function loadSettings(): PersistedSettings {
     workingDir: import.meta.env.VITE_CLAUDE_RUNNER_WORKING_DIR || '',
     selectedModel: '',
     globalShortcuts: [],
+    globalTaskTemplates: [],
   };
 }
 
@@ -69,5 +75,23 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const next = get().globalShortcuts.filter((s) => s.id !== id);
     set({ globalShortcuts: next });
     saveSettings({ ...get(), globalShortcuts: next });
+  },
+
+  addGlobalTaskTemplate: (template) => {
+    const next = [...get().globalTaskTemplates, template];
+    set({ globalTaskTemplates: next });
+    saveSettings({ ...get(), globalTaskTemplates: next });
+  },
+
+  updateGlobalTaskTemplate: (id, patch) => {
+    const next = get().globalTaskTemplates.map((t) => (t.id === id ? { ...t, ...patch } : t));
+    set({ globalTaskTemplates: next });
+    saveSettings({ ...get(), globalTaskTemplates: next });
+  },
+
+  removeGlobalTaskTemplate: (id) => {
+    const next = get().globalTaskTemplates.filter((t) => t.id !== id);
+    set({ globalTaskTemplates: next });
+    saveSettings({ ...get(), globalTaskTemplates: next });
   },
 }));

@@ -18,6 +18,7 @@ export interface Board {
   createdAt: string;
   updatedAt: string;
   shortcuts?: Shortcut[];
+  taskTemplates?: TaskTemplate[];
 }
 
 export interface Shortcut {
@@ -29,6 +30,16 @@ export interface Shortcut {
   workingDir?: string;
   color?: string;
   mode?: 'one-time' | 'loop';
+}
+
+export interface TaskTemplate {
+  id: string;
+  name: string;
+  icon?: string;
+  cardTitle: string;
+  description: string;
+  checklist: string[];
+  priority?: 'critical' | 'high' | 'medium' | 'low';
 }
 
 export interface BoardBackground {

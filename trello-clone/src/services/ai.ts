@@ -624,6 +624,233 @@ export async function generateSkillMarkdown(
     .trim();
 }
 
+// ─── Task Template generator ───────────────────────────────────────────────
+// Turn a short description into a structured task template that the user can
+// save in Settings and spawn as cards later.
+
+const TASK_TEMPLATE_SYSTEM_PROMPT = `You are a project-management assistant generating a reusable task template. Given a short description of what the user wants the template to cover, produce a structured JSON object — nothing else.
+
+Respond ONLY with valid JSON in this exact shape (no markdown fences, no <think> tags, no prose before or after):
+{
+  "name": "short picker label (3-6 words)",
+  "icon": "a single emoji",
+  "cardTitle": "default title for new cards from this template (max 70 chars)",
+  "description": "markdown body for the card: explain how to do the task, what 'done' looks like, include a concrete Example section",
+  "checklist": ["actionable sub-step", "another sub-step"],
+  "priority": "critical" | "high" | "medium" | "low"
+}
+
+Rules:
+- Keep \`checklist\` to 3-6 actionable items, phrased as imperative verbs.
+- The \`description\` must include a \`## How to work on this task\` section AND a \`## Example\` section showing a concrete mini-example of applying the template.
+- Mirror the user's language (Thai or English) in every field.
+- Never invent tools, APIs, or project-specific details the user did not mention — stay generic if unsure.
+- If the description is too vague, make a sensible interpretation and note the assumption at the top of \`description\`.`;
+
+export interface TaskTemplateDraft {
+  name: string;
+  icon?: string;
+  cardTitle: string;
+  description: string;
+  checklist: string[];
+  priority?: 'critical' | 'high' | 'medium' | 'low';
+}
+
+export async function generateTaskTemplate(
+  description: string,
+  onChunk?: (partial: string) => void
+): Promise<TaskTemplateDraft> {
+  const body = JSON.stringify({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: TASK_TEMPLATE_SYSTEM_PROMPT },
+      { role: 'user', content: `Generate a task template for: ${description}` },
+    ],
+    stream: true,
+  });
+
+  const response = await fetch(API_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(API_KEY ? { 'Authorization': `Bearer ${API_KEY}` } : {}),
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AI API error (${response.status}): ${errorText}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response body');
+
+  const decoder = new TextDecoder();
+  let full = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        const token = parsed.message?.content ?? '';
+        if (token) {
+          full += token;
+          onChunk?.(full);
+        }
+      } catch { /* skip malformed */ }
+    }
+  }
+
+  // Robust JSON extraction — strip think tags and code fences, find the first object
+  const cleaned = full
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/```(?:json)?/gi, '')
+    .trim();
+
+  const tryParse = (s: string): TaskTemplateDraft | null => {
+    try {
+      const obj = JSON.parse(s);
+      if (!obj || typeof obj !== 'object') return null;
+      const name = String(obj.name || '').trim();
+      const cardTitle = String(obj.cardTitle || name || '').trim();
+      const desc = String(obj.description || '').trim();
+      const checklist: string[] = Array.isArray(obj.checklist)
+        ? obj.checklist.map((x: unknown) => String(x)).filter(Boolean)
+        : [];
+      const priority = ['critical', 'high', 'medium', 'low'].includes(obj.priority) ? obj.priority : undefined;
+      const icon = typeof obj.icon === 'string' ? obj.icon : undefined;
+      if (!name && !cardTitle) return null;
+      return { name: name || cardTitle, icon, cardTitle, description: desc, checklist, priority };
+    } catch { return null; }
+  };
+
+  const direct = tryParse(cleaned);
+  if (direct) return direct;
+  const objMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    const fromSlice = tryParse(objMatch[0]);
+    if (fromSlice) return fromSlice;
+  }
+
+  throw new Error('AI did not return a valid template JSON.');
+}
+
+// ─── Template × Context merger ─────────────────────────────────────────────
+// Take a stored TaskTemplate and merge it with the user's chat context
+// (whatever they typed in the Template tab of AIAssistant) to produce a
+// customized card tailored to the specific project.
+
+const TEMPLATE_MERGE_SYSTEM_PROMPT = `You are a project-management assistant. The user has a reusable task template and a conversation describing their specific project context. Merge the two into a single task card that keeps the template's structure but customizes every concrete detail to match the context.
+
+Respond ONLY with valid JSON in this exact shape (no markdown fences, no <think> tags, no prose around it):
+{
+  "title": "card title adapted to the context (max 80 chars)",
+  "description": "markdown body keeping the template's sections but with project-specific details, examples, and notes filled in",
+  "checklist": ["actionable, project-specific sub-step 1", "..."]
+}
+
+Rules:
+- Preserve the template's section structure (e.g. '## How to work on this task', '## Example') if present.
+- Replace generic placeholders in the template with concrete details drawn from the user's context.
+- Checklist items must be actionable verbs and grounded in the context — do not repeat the generic template bullets verbatim unless they still apply.
+- If the context doesn't mention something the template asks for, keep a short placeholder like "<to be decided>" rather than inventing details.
+- Mirror the user's language (Thai or English) for all output strings.
+- Never invent tools, APIs, file paths, or people that weren't in the context or template.`;
+
+export interface MergedCardDraft {
+  title: string;
+  description: string;
+  checklist: string[];
+}
+
+export async function generateCardFromTemplate(
+  template: { name: string; cardTitle: string; description: string; checklist: string[]; priority?: string },
+  contextMessages: { role: 'user' | 'assistant'; content: string }[]
+): Promise<MergedCardDraft> {
+  const context = contextMessages
+    .map(m => `${m.role === 'user' ? 'USER' : 'AI'}: ${m.content}`)
+    .join('\n\n');
+
+  const userContent = `TEMPLATE:
+name: ${template.name}
+default title: ${template.cardTitle}
+priority: ${template.priority || '—'}
+
+description (markdown):
+${template.description || '(empty)'}
+
+checklist:
+${template.checklist.map(c => `- ${c}`).join('\n') || '(empty)'}
+
+---
+
+PROJECT CONTEXT (conversation so far):
+${context || '(no context — the user has not chatted yet; fall back to a sensible generic interpretation that still references the template structure)'}`;
+
+  const body = JSON.stringify({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: TEMPLATE_MERGE_SYSTEM_PROMPT },
+      { role: 'user', content: userContent },
+    ],
+    stream: false,
+  });
+
+  const response = await fetch(API_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(API_KEY ? { 'Authorization': `Bearer ${API_KEY}` } : {}),
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AI API error (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as { message?: { content?: string } };
+  const raw = (data.message?.content || '')
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/```(?:json)?/gi, '')
+    .trim();
+
+  const tryParse = (s: string): MergedCardDraft | null => {
+    try {
+      const obj = JSON.parse(s);
+      if (!obj || typeof obj !== 'object') return null;
+      const title = String(obj.title || template.cardTitle || template.name || 'Task').trim();
+      const description = String(obj.description || template.description || '').trim();
+      const checklist: string[] = Array.isArray(obj.checklist)
+        ? obj.checklist.map((x: unknown) => String(x)).filter((s: string) => s.trim().length > 0)
+        : [];
+      return { title, description, checklist: checklist.length > 0 ? checklist : template.checklist };
+    } catch { return null; }
+  };
+
+  const direct = tryParse(raw);
+  if (direct) return direct;
+  const objMatch = raw.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    const fromSlice = tryParse(objMatch[0]);
+    if (fromSlice) return fromSlice;
+  }
+
+  // Fallback: return the raw template untouched so the Create flow still works.
+  return {
+    title: template.cardTitle || template.name || 'Task',
+    description: template.description,
+    checklist: template.checklist,
+  };
+}
+
 export async function generateDescriptionAndChecklist(
   title: string,
   onChunk?: (partial: string) => void

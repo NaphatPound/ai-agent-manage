@@ -316,6 +316,73 @@
   border-color: #EB5A46;
 }
 
+/* Task template editor */
+.tt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.tt-row-header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tt-name {
+  flex: 1;
+}
+
+.tt-icon {
+  width: 44px;
+  text-align: center;
+}
+
+.tt-priority {
+  max-width: 140px;
+}
+
+.tt-cardtitle {
+  width: 100%;
+}
+
+.tt-description,
+.tt-checklist {
+  width: 100%;
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+
+.tt-gen-box {
+  padding: 10px;
+  border: 1px dashed #667eea;
+  border-radius: var(--radius-sm);
+  background: rgba(102, 126, 234, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tt-gen-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tt-gen-toggle {
+  align-self: flex-start;
+}
+
 .settings-spin {
   animation: settingsSpin 1s linear infinite;
 }
